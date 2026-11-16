@@ -54,6 +54,18 @@ ls -la "$RUN/mods"
 python3 "$REPO/loader/merge-assets.py" "$WS/game/src/main/resources" "$RUN"/mods/*.jar
 echo "::endgroup::"
 
+# The built-in voice chat (loader/voicechat): its way to the browser's microphone and speakers sits
+# next to Eaglercraft's own Platform* classes, its assets go in with the other mods' assets, and the
+# mod itself is compiled once the game is (in the init script below), against Fabric API and Mod Menu.
+VC="$REPO/loader/voicechat"
+cp "$VC/platform/PlatformEmlVoice.java" "$WS/platform/src/main/java/net/lax1dude/eaglercraft/v1_8/internal/"
+cp "$VC/platform-teavm/PlatformEmlVoice.java" "$WS/platform-teavm/src/main/java/net/lax1dude/eaglercraft/v1_8/internal/"
+cp -r "$VC/resources/assets/." "$WS/game/src/main/resources/assets/"
+VCP="$WORK/voicechat-cp"; rm -rf "$VCP"; mkdir -p "$VCP"
+for j in "$RUN"/mods/fabric-api-*.jar; do (cd "$VCP" && unzip -qo "$j" 'META-INF/jars/*' && mv META-INF/jars/*.jar . && rm -rf META-INF); done
+cp "$RUN"/mods/modmenu-*.jar "$VCP/" 2>/dev/null || true
+echo "voice chat: browser bridge added, $(ls "$VCP" | wc -l) libraries to compile against"
+
 # The singleplayer server worker is linked from a slice of game.jar that the workspace puts last on
 # its classpath. Library classes the mods changed (DataFixerUpper's TaggedChoice, ...) are in that
 # slice, so it has to come first, as game.jar does for the client, or the originals win.
@@ -151,6 +163,15 @@ allprojects {
           if (!okCodes.contains(code)) throw new GradleException("eagler-modloader: " + logName + " failed (see $WORK/" + logName + ")")
           return code
         }
+        // 0. the built-in voice chat mod, compiled against the game, Fabric API and Mod Menu, then woven like any other
+        def vcClasses = new File("$WORK/voicechat/classes")
+        p.delete(vcClasses); vcClasses.mkdirs()
+        def vcSrcs = []
+        new File("$VC/src").eachFileRecurse { if (it.name.endsWith(".java")) vcSrcs << it.absolutePath }
+        def vcCp = [classes.absolutePath, cp, "$DEPS"] + (new File("$VCP").listFiles().collect { it.absolutePath })
+        run(["javac", "--release", "24", "-nowarn", "-proc:none", "-cp", vcCp.join(File.pathSeparator), "-d", vcClasses.absolutePath] + vcSrcs, "voicechat-javac.log")
+        p.copy { from "$VC/resources"; into vcClasses }
+        run(["jar", "--create", "--file", "$RUN/mods/emlvoice.jar", "-C", vcClasses.absolutePath, "."], "voicechat-jar.log")
         // 1. weave; injectors that don't fit Eaglercraft are turned off one round at a time (exit code 3)
         int round = 0
         while (true) {

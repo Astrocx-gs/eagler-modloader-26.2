@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "emlvoice",
+  "version": "1.0.0",
+  "name": "Voice Chat",
+  "description": "Proximity voice chat made for the browser: push-to-talk or voice activation, voices come from where players stand. Works in worlds shared to LAN and on servers that run it.",
+  "authors": [
+    "OmegaCat_1325"
+  ],
+  "contributors": [
+    "Claude"
+  ],
+  "contact": {
+    "sources": "https://github.com/omigabeta/eagler-modloader-26.2",
+    "issues": "https://github.com/omigabeta/eagler-modloader-26.2/issues"
+  },
+  "license": "Apache-2.0",
+  "icon": "assets/emlvoice/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "eaglermodloader.voicechat.VoiceChat"
+    ],
+    "client": [
+      "eaglermodloader.voicechat.VoiceChatClient"
+    ],
+    "modmenu": [
+      "eaglermodloader.voicechat.VoiceModMenu"
+    ]
+  },
+  "depends": {
+    "minecraft": "*",
+    "fabric-networking-api-v1": "*",
+    "fabric-key-mapping-api-v1": "*",
+    "fabric-rendering-v1": "*",
+    "fabric-lifecycle-events-v1": "*"
+  }
+}
