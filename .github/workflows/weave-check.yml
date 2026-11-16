@@ -13,6 +13,10 @@ on:
       debug_method:
         description: "...only this method (name)"
         required: false
+      upload_classes:
+        description: "Upload the compiled game classes and libraries"
+        type: boolean
+        required: false
 
 env:
   WORKSPACE_REPO: https://github.com/kingjoeishere/Eaglercraft-26.2-Workspace
@@ -56,6 +60,23 @@ jobs:
           DC: ${{ inputs.debug_class }}
           DM: ${{ inputs.debug_method }}
         run: javap -c -p -l "$DC" | awk -v m="$DM" 'index($0, m"(") && /^  [a-z]/ {on=1} on && /^  [a-z].*\(/ && !index($0, m"(") {on=0} on' | head -400
+      - name: Pack the compiled game and its libraries (for compiling built-in mods locally)
+        if: ${{ inputs.upload_classes }}
+        working-directory: workspace
+        run: |
+          mkdir -p ../classes-out/libs
+          (cd game/build/classes/java/main && jar --create --file ../../../../../../classes-out/game-classes.jar .)
+          ./gradlew -q --no-daemon :game:dependencies --configuration compileClasspath > /dev/null || true
+          find ~/.gradle/caches/modules-2 -name '*.jar' ! -name '*-sources.jar' -exec cp {} ../classes-out/libs/ \;
+          (cd platform/build/classes/java/main && jar --create --file ../../../../../classes-out/libs/platform-classes.jar .) || true
+          ls -la ../classes-out ../classes-out/libs | head -50
+      - name: Upload classes
+        if: ${{ inputs.upload_classes }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: game-classes
+          path: classes-out
+          retention-days: 7
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
