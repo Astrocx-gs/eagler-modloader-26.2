@@ -40,6 +40,16 @@ the web page itself. The first one is **Wispcraft**: plain Eaglercraft 26.2 can'
 Microsoft account, so most Java Edition servers (online mode) refuse it. Wispcraft lets the game join
 regular Java servers through a Wisp proxy and sign in with your Microsoft account.
 
+## Voice chat
+
+Simple Voice Chat can't run in a browser (it needs UDP connections and native audio libraries), so the
+loader has its own **Voice Chat**, built in ([`loader/voicechat`](loader/voicechat) and
+[`addons/eml-voice.js`](addons/eml-voice.js)). Hold **V** to talk, or switch to voice activation in its
+settings (**B**, or Mod Menu). **M** mutes your microphone and **N** turns voice chat off. Voices come
+from where players stand and fade out over 48 blocks. The sound goes over the game's own connection, so
+it works in worlds opened to LAN and on servers built with this loader. It doesn't work with servers
+running the Simple Voice Chat plugin. The browser asks for microphone access the first time you talk.
+
 ## What works
 
 | Works well | Needs patching or won't work |
