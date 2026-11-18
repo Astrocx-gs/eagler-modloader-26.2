@@ -3,7 +3,7 @@
   "id": "emlvoice",
   "version": "1.0.0",
   "name": "Voice Chat",
-  "description": "Proximity voice chat made for the browser: push-to-talk or voice activation, voices come from where players stand. Works in worlds shared to LAN and on servers that run it.",
+  "description": "Proximity voice chat made for the browser: push-to-talk or voice activation, voices come from where players stand. Works in worlds shared to LAN, on servers that run it, and with Simple Voice Chat on servers joined through Wispcraft.",
   "authors": [
     "OmegaCat_1325"
   ],
@@ -33,6 +33,7 @@
     "fabric-networking-api-v1": "*",
     "fabric-key-mapping-api-v1": "*",
     "fabric-rendering-v1": "*",
-    "fabric-lifecycle-events-v1": "*"
+    "fabric-lifecycle-events-v1": "*",
+    "fabric-message-api-v1": "*"
   }
 }

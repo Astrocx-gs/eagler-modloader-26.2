@@ -48,4 +48,25 @@ public class PlatformEmlVoice {
 
 	@JSBody(params = { "testing" }, script = "if (typeof window !== 'undefined' && window.emlVoice) window.emlVoice.test(testing);")
 	public static native void setTesting(boolean testing);
+
+	@JSBody(script = "return typeof window !== 'undefined' && window.emlVoice ? window.emlVoice.svcHost() : '';")
+	public static native String svcHost();
+
+	@JSBody(params = { "version", "host", "port", "secretHex", "playerHex", "connectionHex", "keepAlive" }, script = "if (typeof window !== 'undefined' && window.emlVoice) window.emlVoice.svcStart(version, host, port, secretHex, playerHex, connectionHex, keepAlive);")
+	public static native void svcStart(int version, String host, int port, String secretHex, String playerHex, String connectionHex, int keepAlive);
+
+	@JSBody(script = "if (typeof window !== 'undefined' && window.emlVoice) window.emlVoice.svcStop();")
+	public static native void svcStop();
+
+	@JSBody(script = "return typeof window !== 'undefined' && window.emlVoice ? window.emlVoice.svcStatus() : 0;")
+	public static native int svcStatus();
+
+	@JSBody(params = { "x", "y", "z", "yaw" }, script = "if (typeof window !== 'undefined' && window.emlVoice) window.emlVoice.svcListener(x, y, z, yaw);")
+	public static native void svcListener(double x, double y, double z, float yaw);
+
+	@JSBody(params = { "uuid", "x", "y", "z" }, script = "if (typeof window !== 'undefined' && window.emlVoice) window.emlVoice.svcPlayerPos(uuid, x, y, z);")
+	public static native void svcPlayerPos(String uuid, double x, double y, double z);
+
+	@JSBody(script = "return typeof window !== 'undefined' && window.emlVoice ? window.emlVoice.svcSpeakers() : '';")
+	public static native String svcSpeakers();
 }

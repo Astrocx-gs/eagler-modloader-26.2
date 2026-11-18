@@ -28,5 +28,8 @@
   "emlvoice.settings.meter": "Microphone level",
   "emlvoice.settings.hint.ptt": "Hold %s to talk.",
   "emlvoice.settings.hint.voice": "Talks when you're louder than the yellow mark. %2$s mutes.",
-  "emlvoice.settings.hint.where": "Works in worlds opened to LAN, and on servers running this voice chat."
+  "emlvoice.settings.hint.where": "Works in LAN worlds, and with Simple Voice Chat on java:// servers.",
+  "emlvoice.svc.cant": "This server has Simple Voice Chat, but voice can't reach it from this browser: it needs Wispcraft, an https page, and a browser with WebCodecs audio.",
+  "emlvoice.svc.noanswer": "This server has Simple Voice Chat, but its voice server didn't answer. The Wisp proxy probably doesn't allow UDP (try another Wisp server in Wispcraft's settings), or the server's voice port is closed.",
+  "emlvoice.svc.lost": "Lost the connection to this server's Simple Voice Chat."
 }

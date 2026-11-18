@@ -42,13 +42,23 @@ regular Java servers through a Wisp proxy and sign in with your Microsoft accoun
 
 ## Voice chat
 
-Simple Voice Chat can't run in a browser (it needs UDP connections and native audio libraries), so the
-loader has its own **Voice Chat**, built in ([`loader/voicechat`](loader/voicechat) and
+The loader has its own **Voice Chat**, built in ([`loader/voicechat`](loader/voicechat) and
 [`addons/eml-voice.js`](addons/eml-voice.js)). Hold **V** to talk, or switch to voice activation in its
 settings (**B**, or Mod Menu). **M** mutes your microphone and **N** turns voice chat off. Voices come
-from where players stand and fade out over 48 blocks. The sound goes over the game's own connection, so
-it works in worlds opened to LAN and on servers built with this loader. It doesn't work with servers
-running the Simple Voice Chat plugin. The browser asks for microphone access the first time you talk.
+from where players stand and fade out with distance. The browser asks for microphone access the first
+time you talk. It works in two places:
+
+- **Worlds opened to LAN, and servers built with this loader.** The sound goes over the game's own
+  connection.
+- **Java servers running Simple Voice Chat** (the mod or the plugin, versions 2.5, 2.6 and 2.7), joined
+  through Wispcraft (`java://` addresses). You talk with players using the real Simple Voice Chat.
+  Its voice goes over UDP, which a browser can only reach through the Wisp proxy, so this only works
+  when the Wisp server allows UDP. It needs an https page and a browser with WebCodecs audio (current
+  Chrome, Edge, Firefox). If the voice server can't be reached, the chat says so. Groups aren't
+  supported yet: you hear and talk to players near you.
+
+Eaglercraft servers (`wss://` addresses) running Simple Voice Chat can't be reached, because there is
+no way to send UDP to them from a browser.
 
 ## What works
 

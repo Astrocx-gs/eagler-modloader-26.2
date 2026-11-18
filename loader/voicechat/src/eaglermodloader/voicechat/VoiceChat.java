@@ -21,6 +21,11 @@ public final class VoiceChat implements ModInitializer {
 	public void onInitialize() {
 		PayloadTypeRegistry.serverboundPlay().register(MicPayload.TYPE, MicPayload.CODEC);
 		PayloadTypeRegistry.clientboundPlay().register(SpeakerPayload.TYPE, SpeakerPayload.CODEC);
+		// Simple Voice Chat's channels, for joining its voice chat on servers that have it
+		PayloadTypeRegistry.serverboundPlay().register(SvcPayload.REQUEST_SECRET, SvcPayload.codec(SvcPayload.REQUEST_SECRET));
+		PayloadTypeRegistry.serverboundPlay().register(SvcPayload.UPDATE_STATE, SvcPayload.codec(SvcPayload.UPDATE_STATE));
+		PayloadTypeRegistry.serverboundPlay().register(SvcPayload.CLIENT_STATE, SvcPayload.codec(SvcPayload.CLIENT_STATE));
+		PayloadTypeRegistry.clientboundPlay().register(SvcPayload.SECRET, SvcPayload.codec(SvcPayload.SECRET));
 		ServerPlayNetworking.registerGlobalReceiver(MicPayload.TYPE, VoiceChat::relay);
 	}
 

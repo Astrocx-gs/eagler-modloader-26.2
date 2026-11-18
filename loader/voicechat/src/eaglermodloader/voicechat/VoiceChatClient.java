@@ -8,6 +8,7 @@ import com.mojang.blaze3d.platform.InputConstants;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
@@ -44,6 +45,8 @@ public final class VoiceChatClient implements ClientModInitializer {
 		settingsKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.emlvoice.settings", InputConstants.Type.KEYSYM, InputConstants.KEY_B, category));
 		ClientPlayNetworking.registerGlobalReceiver(SpeakerPayload.TYPE, VoiceChatClient::onSpeaker);
 		ClientTickEvents.END_CLIENT_TICK.register(VoiceChatClient::tick);
+		SimpleVoiceChat.init();
+		ClientReceiveMessageEvents.ALLOW_GAME.register((message, overlay) -> overlay || SimpleVoiceChat.allowMessage(message));
 		HudElementRegistry.addLast(Identifier.fromNamespaceAndPath(VoiceChat.MOD_ID, "status"), VoiceChatClient::hud);
 	}
 
@@ -65,7 +68,9 @@ public final class VoiceChatClient implements ClientModInitializer {
 	}
 
 	private static void tick(Minecraft mc) {
-		boolean inWorld = inVoiceWorld(mc);
+		SimpleVoiceChat.tick(mc);
+		boolean lanVoice = inVoiceWorld(mc);
+		boolean inWorld = lanVoice || SimpleVoiceChat.connected();
 		boolean talkDown = talkKey.isDown() && mc.gui.screen() == null;
 
 		while (muteKey.consumeClick()) {
@@ -85,7 +90,7 @@ public final class VoiceChatClient implements ClientModInitializer {
 		talkWasDown = talkDown;
 
 		status = PlatformEmlVoice.tick(talkDown, inWorld);
-		if (inWorld) {
+		if (lanVoice) {
 			byte[] frame;
 			for (int n = 0; n < 10 && (frame = PlatformEmlVoice.poll()) != null; n++) {
 				ClientPlayNetworking.send(new MicPayload(frame));
@@ -151,6 +156,10 @@ public final class VoiceChatClient implements ClientModInitializer {
 			Entity e = mc.level.getEntity(id);
 			String name = e != null ? e.getName().getString() : Component.translatable("emlvoice.hud.someone").getString();
 			graphics.text(mc.font, "♪ " + name, x, y, 0xFFFFFFFF, true);
+			y += 11;
+		}
+		for (String id : SimpleVoiceChat.speakers()) {
+			graphics.text(mc.font, "♪ " + SimpleVoiceChat.name(mc, id), x, y, 0xFFFFFFFF, true);
 			y += 11;
 		}
 	}

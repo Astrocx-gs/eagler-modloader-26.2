@@ -26,4 +26,25 @@ public class PlatformEmlVoice {
 	public static native float micLevel();
 
 	public static native void setTesting(boolean testing);
+
+	// Simple Voice Chat (servers with it, joined through Wispcraft); the voice goes over UDP in eml-voice.js
+
+	/** The server Wispcraft connected to last, "typed name|host", or "". */
+	public static native String svcHost();
+
+	public static native void svcStart(int version, String host, int port, String secretHex, String playerHex, String connectionHex, int keepAlive);
+
+	public static native void svcStop();
+
+	/** 0 none, 1 connecting, 2 connected, 3 can't connect from this browser, 4 no answer, 5 connection lost. */
+	public static native int svcStatus();
+
+	/** The camera's world position and yaw. */
+	public static native void svcListener(double x, double y, double z, float yaw);
+
+	/** A talking player's head, in world coordinates. */
+	public static native void svcPlayerPos(String uuid, double x, double y, double z);
+
+	/** The players heard in the last moment, comma separated UUIDs. */
+	public static native String svcSpeakers();
 }

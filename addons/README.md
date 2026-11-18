@@ -6,7 +6,7 @@ Fabric mod can't do from inside the browser game, like changing how the page con
 
 | Add-on | What it does | By | License |
 |---|---|---|---|
-| `wispcraft.js` | Join regular Java Edition servers through a Wisp proxy, including online-mode servers: sign in with a Microsoft account, encryption and skins. | [Mercury Workshop](https://github.com/MercuryWorkshop/wispcraft) (uses [epoxy-tls](https://github.com/r58Playz/epoxy-tls)) | ISC |
-| `eml-voice.js` | The browser half of the built-in Voice Chat: microphone, compression and 3D playback (the game half is in `loader/voicechat`). | OmegaCat_1325, with Claude | Apache-2.0 |
+| `wispcraft.js` | Join regular Java Edition servers through a Wisp proxy, including online-mode servers: sign in with a Microsoft account, encryption and skins. | [Mercury Workshop](https://github.com/MercuryWorkshop/wispcraft) (uses [epoxy-tls](https://github.com/r58Playz/epoxy-tls)); also exposes `connectUdp` and `serverHost` for the voice chat | ISC |
+| `eml-voice.js` | The browser half of the built-in Voice Chat: microphone, compression and 3D playback, and Simple Voice Chat's protocol over Wispcraft (the game half is in `loader/voicechat`). | OmegaCat_1325, with Claude | Apache-2.0 |
 
 Only add scripts you trust: an add-on runs with full access to the game page.
