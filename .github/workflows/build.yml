@@ -22,6 +22,10 @@ on:
         description: "Diagnostic build (readable names in crash reports; published as a draft only you can see)"
         type: boolean
         default: false
+      mod_urls:
+        description: "Comma-separated Modrinth/direct JAR URLs to include in mods/"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -41,6 +45,13 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
+      - name: Download requested Fabric JARs
+        if: ${{ inputs.mod_urls != '' }}
+        run: |
+          IFS=',' read -ra URLS <<< "${{ inputs.mod_urls }}"
+          for u in "${URLS[@]}"; do
+            [ -n "$u" ] && curl -fSL --retry 3 -o "mods/$(basename "$u")" "$u"
+          done
 
       - uses: actions/setup-java@v4
         with:
