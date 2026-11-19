@@ -90,6 +90,18 @@ jobs:
       - name: "Check the mods: apply them to the game (a few minutes)"
         working-directory: workspace
         run: ./gradlew --no-daemon --console=plain :game:compileJava
+      - name: Print eml/weave.log on failure
+        if: failure()
+        run: |
+          if [ -f eml/weave.log ]; then
+            echo "=== eml/weave.log ==="
+            cat eml/weave.log
+          elif [ -f ../eml/weave.log ]; then
+            echo "=== ../eml/weave.log ==="
+            cat ../eml/weave.log
+          else
+            echo "eml/weave.log not found"
+          fi
 
       - name: Explain a failed mod check
         if: failure()
