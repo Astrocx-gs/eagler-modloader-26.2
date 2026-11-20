@@ -60,7 +60,26 @@ jobs:
             17
             25
 
+      - name: Cache Gradle & Wrapper
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            workspace/.gradle
+          key: gradle-26.2-${{ env.WORKSPACE_COMMIT }}-${{ hashFiles('loader/**') }}
+          restore-keys: |
+            gradle-26.2-${{ env.WORKSPACE_COMMIT }}-
+
+      - name: Cache Eaglercraft 26.2 Workspace
+        id: cache-workspace
+        uses: actions/cache@v4
+        with:
+          path: workspace
+          key: workspace-26.2-${{ env.WORKSPACE_COMMIT }}
+
       - name: Download the Eaglercraft 26.2 workspace
+        if: steps.cache-workspace.outputs.cache-hit != 'true'
         run: |
           git init -q workspace
           cd workspace
