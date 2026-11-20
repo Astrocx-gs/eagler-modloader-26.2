@@ -1,0 +1,32 @@
+```yaml
+name: Diagnose TeaVM Version
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Shallow clone Eaglercraft 26.2 workspace
+        run: |
+          git init -q workspace
+          cd workspace
+          git remote add origin https://github.com/kingjoeishere/Eaglercraft-26.2-Workspace
+          git fetch -q --depth 1 origin f73bff91f0f0840bc958c09ab536dbba1e146b2e
+          git checkout -q FETCH_HEAD
+
+      - name: Print focused TeaVM Wasm GC patch sources
+        run: |
+          echo "=== WasmGCGenerationVisitor.java (lines 730-820) ==="
+          F1=$(find workspace/wasm-toolchain/teavm-eagler-patch/src -name "WasmGCGenerationVisitor.java" | head -n 1)
+          if [ -n "$F1" ]; then nl -ba "$F1" | sed -n '730,820p'; else echo "Not found"; fi
+
+          echo "=== WasmGCBranchTypeRepair.java ==="
+          F2=$(find workspace/wasm-toolchain/teavm-eagler-patch/src -name "WasmGCBranchTypeRepair.java" | head -n 1)
+          if [ -n "$F2" ]; then nl -ba "$F2"; else echo "Not found"; fi
+
+          echo "=== WasmTypeInference.java ==="
+          F3=$(find workspace/wasm-toolchain/teavm-eagler-patch/src -name "WasmTypeInference.java" | head -n 1)
+          if [ -n "$F3" ]; then nl -ba "$F3"; else echo "Not found"; fi
+```
