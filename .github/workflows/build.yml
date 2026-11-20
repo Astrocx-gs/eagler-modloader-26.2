@@ -11,6 +11,7 @@ on:
   push:
     branches: [main]
     paths: ["mods/**", "loader/**", "addons/**"]
+    paths-ignore: ["flick-build-worker.js", "flick-standalone.html", "*.md", "docs/**"]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -24,6 +25,10 @@ on:
         default: false
       mod_urls:
         description: "Comma-separated Modrinth/direct JAR URLs to include in mods/"
+        type: string
+        default: ""
+      cache_key:
+        description: "Deterministic SHA-256 combo key for R2 caching"
         type: string
         default: ""
 
@@ -60,6 +65,18 @@ jobs:
             17
             25
 
+      - name: Diagnostic - Disassemble Xaero applyChunkHighlightColors
+        run: |
+          java -version
+          javap -version
+          XAERO_JAR=$(find mods -name "xaeroworldmap*.jar" | head -n 1)
+          if [ -z "$XAERO_JAR" ]; then
+            mkdir -p /tmp/xaero_diag
+            curl -fsSL "https://cdn.modrinth.com/data/NcUtCpym/versions/W8qSt5Gs/xaeroworldmap-fabric-26.2-1.47.2.jar" -o /tmp/xaero_diag/xaero.jar
+            XAERO_JAR=/tmp/xaero_diag/xaero.jar
+          fi
+          javap -c -p -cp "$XAERO_JAR" xaero.map.highlight.DimensionHighlighterHandler | awk '/applyChunkHighlightColors/{flag=1} flag{print} /^  [a-zA-Z]/ && !/applyChunkHighlightColors/ && flag{if(++c>1)exit}'
+
       - name: Cache Gradle & Wrapper
         uses: actions/cache@v4
         with:
@@ -71,12 +88,17 @@ jobs:
           restore-keys: |
             gradle-26.2-${{ env.WORKSPACE_COMMIT }}-
 
-      - name: Cache Eaglercraft 26.2 Workspace
+      - name: Cache Eaglercraft 26.2 Workspace & Compiled Classes
         id: cache-workspace
         uses: actions/cache@v4
         with:
-          path: workspace
-          key: workspace-26.2-${{ env.WORKSPACE_COMMIT }}
+          path: |
+            workspace
+            workspace/build/classes
+            workspace/build/libs
+          key: workspace-classes-26.2-${{ env.WORKSPACE_COMMIT }}-${{ hashFiles('workspace/build.gradle') }}
+          restore-keys: |
+            workspace-classes-26.2-${{ env.WORKSPACE_COMMIT }}-
 
       - name: Download the Eaglercraft 26.2 workspace
         if: steps.cache-workspace.outputs.cache-hit != 'true'
@@ -186,6 +208,26 @@ jobs:
           java -cp "$DEPS:." PatchTeaVM $CL
           jar uf ../../workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar $CL
 
+      - name: Patch TeaVM WasmGCGenerationVisitor for Xaero SubscriptExpr
+        run: |
+          set -e
+          if patch -d workspace -p1 --dry-run -R -s < eml/xaero-wasmgc-subscript.patch >/dev/null 2>&1; then
+            echo "[Xaero WasmGC Patch] Already applied in workspace."
+          else
+            echo "[Xaero WasmGC Patch] Applying xaero-wasmgc-subscript.patch..."
+            patch -d workspace -p1 < eml/xaero-wasmgc-subscript.patch
+          fi
+          JAR="$(ls "$PWD"/workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-*.jar | head -1)"
+          DEPS="$(ls "$PWD"/eml/deps/*.jar | tr '\n' ':')"
+          mkdir -p eml/patch-wasmgc
+          echo "[Xaero WasmGC Patch] Compiling WasmGCGenerationVisitor.java against $JAR..."
+          javac -nowarn -cp "$JAR:$DEPS" -d eml/patch-wasmgc \
+            workspace/wasm-toolchain/teavm-eagler-patch/src/org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.java
+          echo "[Xaero WasmGC Patch] Updating $JAR..."
+          jar uf "$JAR" -C eml/patch-wasmgc org/teavm/backend/wasm/generate/gc/methods/
+          jar tf "$JAR" | grep -q "org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.class"
+          echo "[Xaero WasmGC Patch] Verified WasmGCGenerationVisitor.class updated in $JAR"
+
       - name: Build the standalone HTML
         working-directory: workspace
         env:
@@ -247,3 +289,11 @@ jobs:
             fi
           } > notes.md
           gh release create "$tag" out/*.html --title "$title" --notes-file notes.md "${kind[@]}"
+
+      - name: Upload successful build as GitHub Actions artifact
+        if: ${{ success() && inputs.cache_key != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: flick-${{ inputs.cache_key }}
+          path: workspace/build/**/*.html
+          if-no-files-found: error
