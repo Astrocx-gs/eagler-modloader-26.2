@@ -206,6 +206,12 @@ jobs:
           unzip -o -q teavm-classlib.jar $CL
           java -cp "$DEPS:." PatchTeaVM $CL
           jar uf ../../workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar $CL
+          # Compile java.security.DigestInputStream with --patch-module java.base so Java 25 allows it, and add to classlib-override.jar
+          find ../../workspace/teavm-compat/src/main/java -name DigestInputStream.java -delete || true
+          if [ -f ../../loader/teavm-compat/java/java/security/DigestInputStream.java ]; then
+            javac -nowarn --patch-module java.base=../../loader/teavm-compat/java -d . ../../loader/teavm-compat/java/java/security/DigestInputStream.java
+            jar uf ../../workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar java/security/DigestInputStream.class
+          fi
 
       - name: Build the standalone HTML
         working-directory: workspace
