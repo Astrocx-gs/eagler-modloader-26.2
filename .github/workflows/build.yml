@@ -213,6 +213,15 @@ jobs:
             jar uf ../../workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar java/security/DigestInputStream.class
           fi
 
+      - name: Pre-link sanity check
+        run: |
+          set -euo pipefail
+          test -f workspace/wasm-toolchain/build-single-html.js
+          test -f workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar
+          test -f workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar
+          jar tf workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar | grep -q "java/security/DigestInputStream.class"
+          echo "[Pre-link] Verified TeaVM JARs, classlib-override.jar (DigestInputStream), and build-single-html.js"
+
       - name: Build the standalone HTML
         working-directory: workspace
         env:
@@ -236,6 +245,28 @@ jobs:
           node wasm-toolchain/build-single-html.js $FAST --output ../out/eaglercraft-26.2-modded.html
           python3 ../loader/inject-addons.py ../addons ../out/eaglercraft-26.2-modded.html
           grep -v '^#' ../eml/disabled-injectors.txt > ../out/turned-off-injectors.txt 2>/dev/null || true
+
+      - name: Capture TeaVM linker diagnostic on failure
+        if: failure()
+        run: |
+          LOG="workspace/wasm-toolchain/generated/client-precise-link.log"
+          if [ -f "$LOG" ]; then
+            echo "=== Last 180 lines of $LOG ==="
+            tail -n 180 "$LOG"
+            echo "=== Fatal errors / Exceptions / Caused by ==="
+            grep -n -C 8 -E "ERROR|Exception|AssertionError|ClassCastException|Caused by:" "$LOG" | tail -n 120 || true
+          else
+            echo "Diagnostic log not found at $LOG"
+          fi
+
+      - name: Upload client-precise-link.log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-precise-link-log
+          path: workspace/wasm-toolchain/generated/client-precise-link.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload build
         uses: actions/upload-artifact@v4
