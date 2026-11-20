@@ -3,22 +3,15 @@ name: Build Eaglercraft 26.2
 # Builds Eaglercraft 26.2 with the Fabric mods in mods/ built in, as one standalone HTML file.
 # loader/weave.sh hooks build-time Fabric into the workspace's Gradle build; see the README.
 #
-# Test builds: faster, lighter compression and readable crash reports.
-# Release builds: maximum compression.
+# Test builds (every push that changes mods/ or loader/, and manual runs): faster, lighter compression,
+# readable names in crash reports, published as a pre-release. Release builds (push a tag like v1.0, or a manual run with "release"
+# ticked): maximum compression, published as a normal release.
 
 on:
   push:
     branches: [main]
-    paths:
-      - "mods/**"
-      - "loader/**"
-      - "addons/**"
-      - "!flick-build-worker.js"
-      - "!flick-standalone.html"
-      - "!*.md"
-      - "!docs/**"
+    paths: ["mods/**", "loader/**", "addons/**", "!flick-build-worker.js", "!flick-standalone.html", "!*.md", "!docs/**"]
     tags: ["v*"]
-
   workflow_dispatch:
     inputs:
       release:
@@ -46,17 +39,16 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # The Eaglercraft 26.2 workspace is downloaded at build time and never committed here.
   WORKSPACE_REPO: https://github.com/kingjoeishere/Eaglercraft-26.2-Workspace
   WORKSPACE_COMMIT: f73bff91f0f0840bc958c09ab536dbba1e146b2e
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest   # public repos: 4 cores, 16 GB RAM
     timeout-minutes: 240
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Download requested Fabric JARs
         if: ${{ inputs.mod_urls != '' }}
         run: |
@@ -72,6 +64,18 @@ jobs:
             17
             25
 
+      - name: Diagnostic - Disassemble Xaero applyChunkHighlightColors
+        run: |
+          java -version
+          javap -version
+          XAERO_JAR=$(find mods -name "xaeroworldmap*.jar" | head -n 1)
+          if [ -z "$XAERO_JAR" ]; then
+            mkdir -p /tmp/xaero_diag
+            curl -fsSL "https://cdn.modrinth.com/data/NcUtCpym/versions/W8qSt5Gs/xaeroworldmap-fabric-26.2-1.47.2.jar" -o /tmp/xaero_diag/xaero.jar
+            XAERO_JAR=/tmp/xaero_diag/xaero.jar
+          fi
+          javap -c -p -cp "$XAERO_JAR" xaero.map.highlight.DimensionHighlighterHandler | awk '/applyChunkHighlightColors/{flag=1} flag{print} /^  [a-zA-Z]/ && !/applyChunkHighlightColors/ && flag{if(++c>1)exit}'
+
       - name: Cache Gradle & Wrapper
         uses: actions/cache@v4
         with:
@@ -83,12 +87,17 @@ jobs:
           restore-keys: |
             gradle-26.2-${{ env.WORKSPACE_COMMIT }}-
 
-      - name: Cache Eaglercraft 26.2 Workspace
+      - name: Cache Eaglercraft 26.2 Workspace & Compiled Classes
         id: cache-workspace
         uses: actions/cache@v4
         with:
-          path: workspace
-          key: workspace-26.2-${{ env.WORKSPACE_COMMIT }}
+          path: |
+            workspace
+            workspace/build/classes
+            workspace/build/libs
+          key: workspace-classes-26.2-${{ env.WORKSPACE_COMMIT }}-${{ hashFiles('workspace/build.gradle') }}
+          restore-keys: |
+            workspace-classes-26.2-${{ env.WORKSPACE_COMMIT }}-
 
       - name: Download the Eaglercraft 26.2 workspace
         if: steps.cache-workspace.outputs.cache-hit != 'true'
@@ -99,26 +108,20 @@ jobs:
           git fetch -q --depth 1 origin "$WORKSPACE_COMMIT"
           git checkout -q FETCH_HEAD
           chmod +x gradlew
-          for i in 1 2 3 4 5; do
-            ./gradlew --no-daemon --version >/dev/null && break
-            echo "Gradle download failed (try $i), retrying"
-            sleep $((i * 20))
-          done
+          # Gradle itself is downloaded on first use; retry, since that download sometimes times out
+          for i in 1 2 3 4 5; do ./gradlew --no-daemon --version >/dev/null && break; echo "Gradle download failed (try $i), retrying"; sleep $((i * 20)); done
 
       - name: Download the mods listed in mods/modrinth.txt
         run: |
-          if [ -f mods/modrinth.txt ]; then
-            python3 tools/modrinth.py download 26.2 mods/modrinth.txt mods
-          fi
+          if [ -f mods/modrinth.txt ]; then python3 tools/modrinth.py download 26.2 mods/modrinth.txt mods; fi
           ls mods
 
+      # Quick checks first, so a mod that can't work stops the build in minutes instead of after the
+      # long browser compile.
       - name: "Check the mods: can each jar be built in? (seconds)"
         run: |
           mkdir -p eml
-          python3 loader/scan-mods.py mods eml/mod-check.md workspace || {
-            cat eml/mod-check.md >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          }
+          python3 loader/scan-mods.py mods eml/mod-check.md workspace || { cat eml/mod-check.md >> "$GITHUB_STEP_SUMMARY"; exit 1; }
           cat eml/mod-check.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up build-time Fabric
@@ -127,13 +130,14 @@ jobs:
       - name: "Check the mods: apply them to the game (a few minutes)"
         working-directory: workspace
         run: ./gradlew --no-daemon --console=plain :game:compileJava
-
       - name: Print eml/weave.log on failure
         if: failure()
         run: |
           if [ -f eml/weave.log ]; then
+            echo "=== eml/weave.log ==="
             cat eml/weave.log
           elif [ -f ../eml/weave.log ]; then
+            echo "=== ../eml/weave.log ==="
             cat ../eml/weave.log
           else
             echo "eml/weave.log not found"
@@ -143,9 +147,9 @@ jobs:
         if: failure()
         run: |
           {
-            echo "## Why the build stopped"
+            echo "## Why the build stopped"; echo
             if [ -f eml/weave.log ]; then
-              echo '```'
+              echo "Applying the mods to the game failed. The important part of the log:"; echo; echo '```'
               grep -E "Incompatible|requires|Mod resolution|Unhandled|Caused by|Exception|ERROR|error:" eml/weave.log | head -40
               echo '```'
             fi
@@ -155,8 +159,7 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
           sudo fallocate -l 8G /swapfile2 && sudo chmod 600 /swapfile2 && sudo mkswap /swapfile2 && sudo swapon /swapfile2 || true
-          free -h
-          df -h /
+          free -h; df -h /
 
       - uses: actions/setup-node@v4
         with:
@@ -167,6 +170,7 @@ jobs:
           python3 loader/fetch-sounds.py 26.2 eml/sounds eml/music
           cd workspace
           mkdir -p target_teavm/build/web
+          # the workspace's own EPK packager, run the way its assets.epk task runs it (desktop platform)
           cat > ../eml/epk.init.gradle <<'EOF2'
           allprojects {
             afterEvaluate { p ->
@@ -188,15 +192,15 @@ jobs:
 
       - name: Patch TeaVM for mods (null checks, missing classes, reflection, Files.createDirectories, UTF8)
         run: |
-          set -e
           DEPS="$(ls "$PWD"/eml/deps/*.jar | tr '\n' ':')"
-          mkdir -p eml/patch-teavm
-          cd eml/patch-teavm
+          mkdir -p eml/patch-teavm && cd eml/patch-teavm
           javac -nowarn -cp "$DEPS" -d . ../../loader/tools/PatchTeaVM.java
           JAR="$(ls ../../workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-*.jar | head -1)"
           unzip -o -q "$JAR" org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class
           java -cp "$DEPS:." PatchTeaVM org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class
           jar uf "$JAR" org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class
+          # TeaVM's classlib (java.lang.reflect.Constructor/Method, java.nio.file.Files): patched copies go in
+          # Eaglercraft's classlib-override.jar, which every program reads before the stock classlib
           curl -fsSL --retry 5 -o teavm-classlib.jar https://repo1.maven.org/maven2/org/teavm/teavm-classlib/0.13.1/teavm-classlib-0.13.1.jar
           CL="org/teavm/classlib/java/lang/reflect/TConstructor.class org/teavm/classlib/java/lang/reflect/TMethod.class org/teavm/classlib/java/nio/file/TFiles.class org/teavm/classlib/java/nio/charset/TCharset.class"
           unzip -o -q teavm-classlib.jar $CL
@@ -206,52 +210,32 @@ jobs:
       - name: Patch TeaVM WasmGCGenerationVisitor for Xaero SubscriptExpr
         run: |
           set -euo pipefail
-
-          PATCH_FILE="xaero-wasmgc-subscript.patch"
-          SOURCE="workspace/wasm-toolchain/teavm-eagler-patch/src/org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.java"
-          CLASS_PATH="org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.class"
-          JAR="$(find "$PWD/workspace/wasm-toolchain/teavm-eagler-patch" -maxdepth 1 -name 'teavm-core-*.jar' -print -quit)"
-          DEPS="$(find "$PWD/eml/deps" -name '*.jar' -printf '%p:' | sed 's/:$//')"
-
-          test -f "$PATCH_FILE"
-          test -f "$SOURCE"
-          test -n "$JAR"
-          test -n "$DEPS"
-
-          if patch -d workspace -p1 --dry-run -R -s < "$PATCH_FILE" >/dev/null 2>&1; then
-            echo "[Xaero] Source patch already applied."
+          echo "[Xaero WasmGC Patch] Checking patch file..."
+          ls -la eml/xaero-wasmgc-subscript.patch
+          TARGET="workspace/wasm-toolchain/teavm-eagler-patch/src/org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.java"
+          echo "[Xaero WasmGC Patch] Checking target file: $TARGET"
+          ls -la "$TARGET"
+          if patch -d workspace -p1 --dry-run -R -s < eml/xaero-wasmgc-subscript.patch >/dev/null 2>&1; then
+            echo "[Xaero WasmGC Patch] Already applied in workspace."
           else
-            echo "[Xaero] Applying source patch."
-            patch -d workspace -p1 --forward < "$PATCH_FILE"
+            echo "[Xaero WasmGC Patch] Applying xaero-wasmgc-subscript.patch..."
+            patch -d workspace -p1 < eml/xaero-wasmgc-subscript.patch
           fi
-
-          echo "[Xaero] Compiling patched visitor."
+          JAR="$(ls "$PWD"/workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-*.jar | head -1)"
+          DEPS="$(ls "$PWD"/eml/deps/*.jar | tr '\n' ':')"
           mkdir -p eml/patch-wasmgc
-          javac -nowarn -cp "$JAR:$DEPS" -d eml/patch-wasmgc "$SOURCE"
-
-          test -f "eml/patch-wasmgc/$CLASS_PATH"
-          echo "[Xaero] Compiled class found."
-
-          javap -classpath eml/patch-wasmgc -c org.teavm.backend.wasm.generate.gc.methods.WasmGCGenerationVisitor > eml/xaero-patched-bytecode.txt
-          grep -q "checkcast" eml/xaero-patched-bytecode.txt
-
-          echo "[Xaero] Replacing compiler class."
+          echo "[Xaero WasmGC Patch] Compiling WasmGCGenerationVisitor.java against $JAR..."
+          javac -nowarn -cp "$JAR:$DEPS" -d eml/patch-wasmgc "$TARGET"
+          echo "[Xaero WasmGC Patch] Updating $JAR..."
           jar uf "$JAR" -C eml/patch-wasmgc org/teavm/backend/wasm/generate/gc/methods/
-
-          mkdir -p eml/verify-wasmgc
-          cd eml/verify-wasmgc
-          jar xf "$JAR" "$CLASS_PATH"
-          cmp "$CLASS_PATH" "../patch-wasmgc/$CLASS_PATH"
-
-          echo "[Xaero] Verified patched class bytes in compiler JAR."
-          cd ../..
-          sha256sum "$JAR" eml/patch-wasmgc/"$CLASS_PATH" > eml/xaero-patch-checksums.txt
-          cat eml/xaero-patch-checksums.txt
+          jar tf "$JAR" | grep -q "org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.class"
+          echo "[Xaero WasmGC Patch] Verified WasmGCGenerationVisitor.class updated in $JAR"
 
       - name: Build the standalone HTML
         working-directory: workspace
         env:
           RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.release == true }}
+          # test builds keep readable names in crash reports; releases don't
           DIAGNOSTIC: ${{ inputs.diagnostic == true || !(startsWith(github.ref, 'refs/tags/v') || inputs.release == true) }}
           EAGLER_BUILD_CAP_MIB: "13312"
           GRADLE_OPTS: "-Dorg.gradle.daemon=false"
@@ -261,7 +245,9 @@ jobs:
           if [ "$RELEASE" = "true" ]; then FAST=""; else FAST="--fast-package"; fi
           if [ "$DIAGNOSTIC" = "true" ]; then
             FAST="$FAST --diagnostic"
+            # also keep readable names in the singleplayer server worker's crash reports
             export EAGLER_SERVER_DIAGNOSTIC=1
+            # the workspace only installs a named server build for local debugging; install it here too
             sed -i 's/^  if (diagnostic) {$/  if (false) {/' wasm-toolchain/link-server-standalone.js
             grep -q '^  if (false) {$' wasm-toolchain/link-server-standalone.js
           fi
@@ -277,8 +263,6 @@ jobs:
             out/
             eml/weave.log
             eml/gen.log
-            eml/xaero-patched-bytecode.txt
-            eml/xaero-patch-checksums.txt
           retention-days: 14
 
       - name: Publish
@@ -289,49 +273,24 @@ jobs:
           DIAGNOSTIC: ${{ inputs.diagnostic == true }}
         run: |
           if [ "$DIAGNOSTIC" = "true" ]; then
-            tag="diag-${GITHUB_RUN_NUMBER}"
-            title="Diagnostic build ${GITHUB_RUN_NUMBER}"
-            kind=(--draft)
+            tag="diag-${GITHUB_RUN_NUMBER}"; title="Diagnostic build ${GITHUB_RUN_NUMBER}"; kind=(--draft)
           elif [ "$RELEASE" = "true" ]; then
-            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-              tag="${GITHUB_REF_NAME}"
-            else
-              tag="release-${GITHUB_RUN_NUMBER}"
-            fi
-            title="$tag"
-            kind=(--latest)
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then tag="${GITHUB_REF_NAME}"; else tag="release-${GITHUB_RUN_NUMBER}"; fi
+            title="$tag"; kind=(--latest)
           else
-            tag="test-${GITHUB_RUN_NUMBER}"
-            title="Test build ${GITHUB_RUN_NUMBER}"
-            kind=(--prerelease)
+            tag="test-${GITHUB_RUN_NUMBER}"; title="Test build ${GITHUB_RUN_NUMBER}"; kind=(--prerelease)
           fi
-
           {
-            if [ "$RELEASE" != "true" ]; then
-              echo "Test build: lighter compression, so the file is a bit larger."
-              echo
-            fi
+            if [ "$RELEASE" != "true" ]; then echo "Test build: lighter compression, so the file is a bit larger."; echo; fi
             echo "Eaglercraft 26.2 with these Fabric mods built in (from ${GITHUB_SHA::7}):"
-            echo
-            ls mods | grep '\.jar$' | sed 's/^/- /'
-            if ls addons/*.js >/dev/null 2>&1; then
-              echo
-              echo "Add-ons:"
-              echo
-              ls addons/*.js | xargs -n1 basename | sed 's/^/- /'
-            fi
-            if [ -s eml/mod-check.md ]; then
-              echo
-              sed 's/^## Mod check$/### Mod check/' eml/mod-check.md
-            fi
+            echo; ls mods | grep '\.jar$' | sed 's/^/- /'
+            if ls addons/*.js >/dev/null 2>&1; then echo; echo "Add-ons:"; echo; ls addons/*.js | xargs -n1 basename | sed 's/^/- /'; fi
+            if [ -s eml/mod-check.md ]; then echo; sed 's/^## Mod check$/### Mod check/' eml/mod-check.md; fi
             if [ -s out/turned-off-injectors.txt ]; then
-              echo
-              echo "These mod injections don't fit Eaglercraft's version of the game and were turned off:"
-              echo
-              sed 's/^/- /' out/turned-off-injectors.txt
+              echo; echo "These mod injections don't fit Eaglercraft's version of the game and were turned off:"
+              echo; sed 's/^/- /' out/turned-off-injectors.txt
             fi
           } > notes.md
-
           gh release create "$tag" out/*.html --title "$title" --notes-file notes.md "${kind[@]}"
 
       - name: Upload successful build as GitHub Actions artifact
