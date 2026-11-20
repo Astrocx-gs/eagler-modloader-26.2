@@ -1,3 +1,4 @@
+```yaml
 name: Diagnose TeaVM Version
 
 on:
@@ -15,20 +16,17 @@ jobs:
           git fetch -q --depth 1 origin f73bff91f0f0840bc958c09ab536dbba1e146b2e
           git checkout -q FETCH_HEAD
 
-      - name: Print TeaVM dependency declarations
+      - name: Print focused TeaVM Wasm GC patch sources
         run: |
-          echo "=== platform-teavm/build.gradle ==="
-          grep -in "teavm" workspace/platform-teavm/build.gradle || true
-          echo "=== All teavm mentions in Gradle files ==="
-          grep -rn -i "teavm" workspace --include="*.gradle*" --include="*.toml" --include="*.properties" || true
+          echo "=== WasmGCGenerationVisitor.java (lines 730-820) ==="
+          F1=$(find workspace/wasm-toolchain/teavm-eagler-patch/src -name "WasmGCGenerationVisitor.java" | head -n 1)
+          if [ -n "$F1" ]; then nl -ba "$F1" | sed -n '730,820p'; else echo "Not found"; fi
 
-      - name: Print patched TeaVM Wasm GC files
-        run: |
-          echo "=== Patched JARs ==="
-          ls -la workspace/wasm-toolchain/teavm-eagler-patch/*.jar || true
-          echo "=== wasm-toolchain/teavm-eagler-patch/build-patched-core.sh ==="
-          cat workspace/wasm-toolchain/teavm-eagler-patch/build-patched-core.sh || true
-          echo "=== target_teavm_wasm_gc/build.gradle.kts ==="
-          cat workspace/target_teavm_wasm_gc/build.gradle.kts || true
-          echo "=== wasm-toolchain/teavm-eagler-patch/src/ ==="
-          find workspace/wasm-toolchain/teavm-eagler-patch/src -type f -name "*.java" -exec sh -c 'echo "--- $1 ---"; cat "$1"' _ {} \; || true
+          echo "=== WasmGCBranchTypeRepair.java ==="
+          F2=$(find workspace/wasm-toolchain/teavm-eagler-patch/src -name "WasmGCBranchTypeRepair.java" | head -n 1)
+          if [ -n "$F2" ]; then nl -ba "$F2"; else echo "Not found"; fi
+
+          echo "=== WasmTypeInference.java ==="
+          F3=$(find workspace/wasm-toolchain/teavm-eagler-patch/src -name "WasmTypeInference.java" | head -n 1)
+          if [ -n "$F3" ]; then nl -ba "$F3"; else echo "Not found"; fi
+```
