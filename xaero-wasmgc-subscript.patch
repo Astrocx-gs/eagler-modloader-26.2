@@ -1,0 +1,28 @@
+--- a/wasm-toolchain/teavm-eagler-patch/src/org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.java
++++ b/wasm-toolchain/teavm-eagler-patch/src/org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.java
+@@ -772,8 +772,27 @@
+         accept(expr.getArray());
+         var arrayExpr = result;
+         var arrayTypeRef = (WasmType.CompositeReference) typeInference.getSingleResult();
++        var objectType = context.typeMapper().mapType(ValueType.object("java.lang.Object"));
++        if (arrayTypeRef.equals(objectType)) {
++            ValueType elemType;
++            switch (expr.getType()) {
++                case BYTE: elemType = ValueType.BYTE; break;
++                case SHORT: elemType = ValueType.SHORT; break;
++                case CHAR: elemType = ValueType.CHARACTER; break;
++                case INT: elemType = ValueType.INTEGER; break;
++                case LONG: elemType = ValueType.LONG; break;
++                case FLOAT: elemType = ValueType.FLOAT; break;
++                case DOUBLE: elemType = ValueType.DOUBLE; break;
++                case OBJECT: elemType = ValueType.object("java.lang.Object"); break;
++                default: throw new IllegalStateException("Unsupported ArrayType: " + expr.getType());
++            }
++            var expectedArrayType = (WasmType.CompositeReference) context.typeMapper().mapType(ValueType.arrayOf(elemType));
++            if (expectedArrayType.composite instanceof WasmArray) {
++                arrayExpr = new WasmCast(arrayExpr, expectedArrayType);
++                arrayTypeRef = expectedArrayType;
++            }
++        }
+         var arrayType = (WasmArray) arrayTypeRef.composite;
+         result = arrayExpr;
