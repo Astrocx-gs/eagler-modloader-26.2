@@ -21,3 +21,14 @@ jobs:
           grep -in "teavm" workspace/platform-teavm/build.gradle || true
           echo "=== All teavm mentions in Gradle files ==="
           grep -rn -i "teavm" workspace --include="*.gradle*" --include="*.toml" --include="*.properties" || true
+
+      - name: Print patched TeaVM Wasm GC files
+        run: |
+          echo "=== Patched JARs ==="
+          ls -la workspace/wasm-toolchain/teavm-eagler-patch/*.jar || true
+          echo "=== wasm-toolchain/teavm-eagler-patch/build-patched-core.sh ==="
+          cat workspace/wasm-toolchain/teavm-eagler-patch/build-patched-core.sh || true
+          echo "=== target_teavm_wasm_gc/build.gradle.kts ==="
+          cat workspace/target_teavm_wasm_gc/build.gradle.kts || true
+          echo "=== wasm-toolchain/teavm-eagler-patch/src/ ==="
+          find workspace/wasm-toolchain/teavm-eagler-patch/src -type f -name "*.java" -exec sh -c 'echo "--- $1 ---"; cat "$1"' _ {} \; || true
