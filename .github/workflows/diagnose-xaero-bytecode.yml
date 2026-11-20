@@ -1,4 +1,4 @@
-name: Diagnose Xaero Bytecode
+name: Diagnose TeaVM Version
 
 on:
   workflow_dispatch:
@@ -7,14 +7,17 @@ jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      - name: Disassemble applyChunkHighlightColors
+      - name: Shallow clone Eaglercraft 26.2 workspace
         run: |
-          java -version
-          javap -version
-          curl -fsSL "https://cdn.modrinth.com/data/NcUtCpym/versions/W8qSt5Gs/xaeroworldmap-fabric-26.2-1.47.2.jar" -o /tmp/xaero.jar
-          javap -c -p -cp /tmp/xaero.jar xaero.map.highlight.DimensionHighlighterHandler | awk '/applyChunkHighlightColors/{flag=1} flag{print} /^  [a-zA-Z]/ && !/applyChunkHighlightColors/ && flag{if(++c>1)exit}'
+          git init -q workspace
+          cd workspace
+          git remote add origin https://github.com/kingjoeishere/Eaglercraft-26.2-Workspace
+          git fetch -q --depth 1 origin f73bff91f0f0840bc958c09ab536dbba1e146b2e
+          git checkout -q FETCH_HEAD
+
+      - name: Print TeaVM dependency declarations
+        run: |
+          echo "=== platform-teavm/build.gradle ==="
+          grep -in "teavm" workspace/platform-teavm/build.gradle || true
+          echo "=== All teavm mentions in Gradle files ==="
+          grep -rn -i "teavm" workspace --include="*.gradle*" --include="*.toml" --include="*.properties" || true
