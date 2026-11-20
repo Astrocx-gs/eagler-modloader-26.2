@@ -1,4 +1,3 @@
-```yaml
 name: Diagnose TeaVM Version
 
 on:
@@ -29,4 +28,3 @@ jobs:
           echo "=== WasmTypeInference.java ==="
           F3=$(find workspace/wasm-toolchain/teavm-eagler-patch/src -name "WasmTypeInference.java" | head -n 1)
           if [ -n "$F3" ]; then nl -ba "$F3"; else echo "Not found"; fi
-```
