@@ -1,5 +1,4 @@
-```yaml
-name: Diagnose TeaVM Version
+name: Diagnose Xaero Bytecode
 
 on:
   workflow_dispatch:
@@ -8,25 +7,14 @@ jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
-      - name: Shallow clone Eaglercraft 26.2 workspace
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Disassemble applyChunkHighlightColors
         run: |
-          git init -q workspace
-          cd workspace
-          git remote add origin https://github.com/kingjoeishere/Eaglercraft-26.2-Workspace
-          git fetch -q --depth 1 origin f73bff91f0f0840bc958c09ab536dbba1e146b2e
-          git checkout -q FETCH_HEAD
-
-      - name: Print focused TeaVM Wasm GC patch sources
-        run: |
-          echo "=== WasmGCGenerationVisitor.java (lines 730-820) ==="
-          F1=$(find workspace/wasm-toolchain/teavm-eagler-patch/src -name "WasmGCGenerationVisitor.java" | head -n 1)
-          if [ -n "$F1" ]; then nl -ba "$F1" | sed -n '730,820p'; else echo "Not found"; fi
-
-          echo "=== WasmGCBranchTypeRepair.java ==="
-          F2=$(find workspace/wasm-toolchain/teavm-eagler-patch/src -name "WasmGCBranchTypeRepair.java" | head -n 1)
-          if [ -n "$F2" ]; then nl -ba "$F2"; else echo "Not found"; fi
-
-          echo "=== WasmTypeInference.java ==="
-          F3=$(find workspace/wasm-toolchain/teavm-eagler-patch/src -name "WasmTypeInference.java" | head -n 1)
-          if [ -n "$F3" ]; then nl -ba "$F3"; else echo "Not found"; fi
-```
+          java -version
+          javap -version
+          curl -fsSL "https://cdn.modrinth.com/data/NcUtCpym/versions/W8qSt5Gs/xaeroworldmap-fabric-26.2-1.47.2.jar" -o /tmp/xaero.jar
+          javap -c -p -cp /tmp/xaero.jar xaero.map.highlight.DimensionHighlighterHandler | awk '/applyChunkHighlightColors/{flag=1} flag{print} /^  [a-zA-Z]/ && !/applyChunkHighlightColors/ && flag{if(++c>1)exit}'
