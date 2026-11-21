@@ -179,6 +179,28 @@ jobs:
           ./gradlew --no-daemon --console=plain -I ../eml/epk.init.gradle :target_lwjgl_desktop:emlPack_sounds :target_lwjgl_desktop:emlPack_music
           ls -la target_teavm/build/web/
 
+      - name: Verify PatchTeaVM idempotency on ReferenceResolver
+        run: |
+          set -euo pipefail
+          DEPS="$(ls "$PWD"/eml/deps/*.jar | tr '\n' ':')"
+          JAR="$(ls "$PWD"/workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-*.jar | head -1)"
+          mkdir -p /tmp/rr-test && cd /tmp/rr-test
+          javac -nowarn -cp "$DEPS" -d . "$GITHUB_WORKSPACE/loader/tools/PatchTeaVM.java"
+          unzip -o -q "$JAR" org/teavm/dependency/ReferenceResolver.class
+          echo "=== Before Run 1 (javap reportError) ==="
+          javap -p -c org/teavm/dependency/ReferenceResolver.class | grep -A 25 "reportError" || true
+          echo "=== Run 1 (unpatched -> patched) ==="
+          java -cp "$DEPS:." PatchTeaVM org/teavm/dependency/ReferenceResolver.class
+          echo "=== After Run 1 (verify Diagnostics.warning) ==="
+          javap -p -c org/teavm/dependency/ReferenceResolver.class | grep -A 25 "reportError" | grep -F "org/teavm/diagnostics/Diagnostics.warning"
+          cp org/teavm/dependency/ReferenceResolver.class ReferenceResolver.class.after1
+          echo "=== Run 2 (already patched -> no-op) ==="
+          java -cp "$DEPS:." PatchTeaVM org/teavm/dependency/ReferenceResolver.class | tee /tmp/rr-run2.log
+          grep -F "already patched" /tmp/rr-run2.log >/dev/null
+          cmp -s org/teavm/dependency/ReferenceResolver.class ReferenceResolver.class.after1
+          jar tf "$JAR" >/dev/null
+          echo "[PatchTeaVM] Idempotency, Diagnostics.warning, & JAR integrity verified."
+
       - name: Patch TeaVM for mods (null checks, missing classes, reflection, Files.createDirectories, UTF8)
         run: |
           DEPS="$(ls "$PWD"/eml/deps/*.jar | tr '\n' ':')"
