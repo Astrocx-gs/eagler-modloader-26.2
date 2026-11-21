@@ -64,17 +64,6 @@ jobs:
             17
             25
 
-      - name: Diagnostic - Disassemble Xaero applyChunkHighlightColors
-        run: |
-          java -version
-          javap -version
-          XAERO_JAR=$(find mods -name "xaeroworldmap*.jar" | head -n 1)
-          if [ -z "$XAERO_JAR" ]; then
-            mkdir -p /tmp/xaero_diag
-            curl -fsSL "https://cdn.modrinth.com/data/NcUtCpym/versions/W8qSt5Gs/xaeroworldmap-fabric-26.2-1.47.2.jar" -o /tmp/xaero_diag/xaero.jar
-            XAERO_JAR=/tmp/xaero_diag/xaero.jar
-          fi
-          javap -c -p -cp "$XAERO_JAR" xaero.map.highlight.DimensionHighlighterHandler | awk '/applyChunkHighlightColors/{flag=1} flag{print} /^  [a-zA-Z]/ && !/applyChunkHighlightColors/ && flag{if(++c>1)exit}'
 
       - name: Cache Gradle & Wrapper
         uses: actions/cache@v4
@@ -215,48 +204,6 @@ jobs:
           fi
           echo "[patch-teavm] COMPLETED successfully."
 
-      - name: Patch TeaVM WasmGCGenerationVisitor for Xaero SubscriptExpr
-        run: |
-          set -euo pipefail
-          PATCH_FILE="xaero-wasmgc-subscript.patch"
-          [ -f "$PATCH_FILE" ] || PATCH_FILE="eml/xaero-wasmgc-subscript.patch"
-          MATCHES="$(find workspace/wasm-toolchain/teavm-eagler-patch/src -name "WasmGCGenerationVisitor.java")"
-          COUNT="$(echo "$MATCHES" | grep -c . || true)"
-          if [ "$COUNT" -ne 1 ]; then
-            echo "[Xaero WasmGC Patch] ERROR: Expected 1 WasmGCGenerationVisitor.java, found $COUNT:"
-            echo "$MATCHES"
-            exit 1
-          fi
-          TARGET="$MATCHES"
-          echo "[Xaero WasmGC Patch] Resolved target file: $TARGET"
-          REV_OUT="$(patch --dry-run -R --fuzz=0 "$TARGET" < "$PATCH_FILE" 2>&1)" && REV_OK=1 || REV_OK=0
-          FWD_OUT="$(patch --dry-run --fuzz=0 "$TARGET" < "$PATCH_FILE" 2>&1)" && FWD_OK=1 || FWD_OK=0
-          if [ "$REV_OK" -eq 1 ] && echo "$REV_OUT" | grep -qi "offset"; then REV_OK=0; fi
-          if [ "$FWD_OK" -eq 1 ] && echo "$FWD_OUT" | grep -qi "offset"; then FWD_OK=0; fi
-          if [ "$REV_OK" -eq 1 ] && [ "$FWD_OK" -eq 1 ]; then
-            echo "[Xaero WasmGC Patch] ERROR: Ambiguous state (both forward and reverse dry-runs succeeded)."
-            exit 1
-          elif [ "$REV_OK" -eq 1 ]; then
-            echo "[Xaero WasmGC Patch] Already applied in workspace."
-          elif [ "$FWD_OK" -eq 1 ]; then
-            echo "[Xaero WasmGC Patch] Applying $PATCH_FILE to $TARGET..."
-            patch --fuzz=0 "$TARGET" < "$PATCH_FILE"
-          else
-            echo "[Xaero WasmGC Patch] ERROR: Neither forward nor reverse patch applies cleanly (--fuzz=0). Source may be partially patched or incompatible."
-            exit 1
-          fi
-          JAR="$(ls "$PWD"/workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar | head -1)"
-          DEPS="$(ls "$PWD"/eml/deps/*.jar | tr '\n' ':')"
-          mkdir -p eml/patch-wasmgc eml/patch-wasmgc-verify
-          echo "[Xaero WasmGC Patch] Compiling WasmGCGenerationVisitor.java against $JAR..."
-          javac -nowarn -cp "$JAR:$DEPS" -d eml/patch-wasmgc "$TARGET"
-          echo "[Xaero WasmGC Patch] Updating $JAR..."
-          jar uf "$JAR" -C eml/patch-wasmgc org/teavm/backend/wasm/generate/gc/methods/
-          echo "[Xaero WasmGC Patch] Extracting and byte-comparing WasmGCGenerationVisitor.class..."
-          (cd eml/patch-wasmgc-verify && jar xf "$JAR" org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.class)
-          cmp -s eml/patch-wasmgc/org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.class \
-                 eml/patch-wasmgc-verify/org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.class
-          echo "[Xaero WasmGC Patch] Byte-for-byte match verified in $JAR"
 
       - name: Pre-link sanity check
         run: |
