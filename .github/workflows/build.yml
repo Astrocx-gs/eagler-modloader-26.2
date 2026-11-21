@@ -235,6 +235,58 @@ jobs:
           fi
           echo "[Pre-link] COMPLETED: All checks passed."
 
+      - name: Integrate FlickBridge into Gui.render
+        run: |
+          set -euo pipefail
+          GUI_FILES="$(find workspace -path "*net/minecraft/client/gui/Gui.java")"
+          COUNT="$(echo "$GUI_FILES" | grep -c . || true)"
+          if [ "$COUNT" -ne 1 ]; then
+            echo "[FlickBridge] ERROR: Expected 1 Gui.java, found $COUNT"
+            exit 1
+          fi
+          GUI_FILE="$GUI_FILES"
+          python3 - "$GUI_FILE" << 'PY'
+          import sys, re
+          path = sys.argv[1]
+          src = open(path, "r", encoding="utf-8").read()
+          if "FlickBridge.dispatchHud" in src:
+              print("[FlickBridge] Already integrated in", path)
+              sys.exit(0)
+          m = re.search(r"(public\s+void\s+render\s*\(\s*GuiGraphics\s+(\w+)\s*,\s*DeltaTracker\s+\w+\s*\)\s*\{)", src)
+          if not m:
+              print("[FlickBridge] ERROR: Gui.render(GuiGraphics, DeltaTracker) not found in", path)
+              sys.exit(1)
+          gfx = m.group(2)
+          hook = (
+              "\n        net.flick.bridge.FlickBridge.initRegistry();\n"
+              "        if (this.minecraft != null && this.minecraft.player != null) {\n"
+              "            StringBuilder _ab = new StringBuilder(\"[\");\n"
+              "            var _arm = this.minecraft.player.getInventory().armor;\n"
+              "            for (int _i = 0; _i < _arm.size(); _i++) {\n"
+              "                var _st = _arm.get(_i);\n"
+              "                if (_i > 0) _ab.append(',');\n"
+              "                _ab.append(\"{\\\"item\\\":\\\"\").append(_st.isEmpty() ? \"\" : String.valueOf(_st.getItem())).append(\"\\\",\\\"durability\\\":\").append(_st.getMaxDamage() - _st.getDamageValue()).append(\",\\\"maxDurability\\\":\").append(Math.max(1, _st.getMaxDamage())).append('}');\n"
+              "            }\n"
+              "            _ab.append(']');\n"
+              "            String _cmds = net.flick.bridge.FlickBridge.dispatchHud(_ab.toString());\n"
+              "            if (_cmds != null && !_cmds.isEmpty()) {\n"
+              "                for (String _line : _cmds.split(\"\\n\")) {\n"
+              "                    String[] _p = _line.split(\"(?<!\\\\\\\\)\\\\|\", -1);\n"
+              "                    if (_p.length >= 4 && \"T\".equals(_p[0])) {\n"
+              "                        int _x = Integer.parseInt(_p[2]), _y = Integer.parseInt(_p[3]);\n"
+              "                        int _col = _p.length >= 5 && _p[4].startsWith(\"#\") ? (0xFF000000 | Integer.parseInt(_p[4].substring(1), 16)) : 0xFFFFFFFF;\n"
+              "                        String _txt = _p[1].replace(\"\\\\n\", \"\\n\").replace(\"\\\\r\", \"\\r\").replace(\"\\\\|\", \"|\").replace(\"\\\\\\\\\", \"\\\\\");\n"
+              f"                        {gfx}.drawString(this.getFont(), _txt, _x, _y, _col);\n"
+              "                    }\n"
+              "                }\n"
+              "            }\n"
+              "        }\n"
+          )
+          src = src[:m.end()] + hook + src[m.end():]
+          open(path, "w", encoding="utf-8").write(src)
+          print("[FlickBridge] Integrated into", path)
+          PY
+
       - name: Build the standalone HTML
         working-directory: workspace
         env:
