@@ -52,20 +52,26 @@ public class PatchTeaVM {
 		ClassReader cr = new ClassReader(Files.readAllBytes(p));
 		ClassWriter cw = new ClassWriter(0);
 		final int[] n = { 0 };
+		final int[] already = { 0 };
 		cr.accept(new ClassVisitor(Opcodes.ASM9, cw) {
 			@Override
 			public MethodVisitor visitMethod(int access, String name, String desc, String sig, String[] ex) {
 				MethodVisitor mv = super.visitMethod(access, name, desc, sig, ex);
-				if (!name.equals("reportError")) return mv;
+				if (!name.equals("reportError") || !desc.equals("(Lorg/teavm/model/CallLocation;Ljava/lang/String;[Ljava/lang/Object;)V")) return mv;
 				return new MethodVisitor(Opcodes.ASM9, mv) {
 					@Override
 					public void visitMethodInsn(int op, String owner, String mname, String mdesc, boolean itf) {
-						if (owner.equals("org/teavm/diagnostics/Diagnostics") && mname.equals("error")) { mname = "warning"; n[0]++; }
+						if (owner.equals("org/teavm/diagnostics/Diagnostics") && mname.equals("error") && mdesc.equals("(Lorg/teavm/model/CallLocation;Ljava/lang/String;[Ljava/lang/Object;)V")) { mname = "warning"; n[0]++; }
+						else if (owner.equals("org/teavm/diagnostics/Diagnostics") && mname.equals("warning") && mdesc.equals("(Lorg/teavm/model/CallLocation;Ljava/lang/String;[Ljava/lang/Object;)V")) { already[0]++; }
 						super.visitMethodInsn(op, owner, mname, mdesc, itf);
 					}
 				};
 			}
 		}, 0);
+		if (n[0] == 0 && already[0] > 0) {
+			System.out.println("already patched " + p + ": missing classes/methods/fields are warnings (" + already[0] + " calls)");
+			return;
+		}
 		if (n[0] == 0) throw new IllegalStateException("ReferenceResolver.reportError: no Diagnostics.error call found");
 		Files.write(p, cw.toByteArray());
 		System.out.println("patched " + p + ": missing classes/methods/fields are warnings (" + n[0] + " calls)");
