@@ -57,7 +57,7 @@ public class PatchTeaVM {
 			@Override
 			public MethodVisitor visitMethod(int access, String name, String desc, String sig, String[] ex) {
 				MethodVisitor mv = super.visitMethod(access, name, desc, sig, ex);
-				if (!name.equals("reportError") || !desc.equals("(Lorg/teavm/model/CallLocation;Ljava/lang/String;[Ljava/lang/Object;)V")) return mv;
+				if (!name.equals("reportError")) return mv;
 				return new MethodVisitor(Opcodes.ASM9, mv) {
 					@Override
 					public void visitMethodInsn(int op, String owner, String mname, String mdesc, boolean itf) {
