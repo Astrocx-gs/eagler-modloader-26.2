@@ -215,6 +215,35 @@ jobs:
           fi
           echo "[patch-teavm] COMPLETED successfully."
 
+      - name: Patch TeaVM WasmGCGenerationVisitor for Xaero SubscriptExpr
+        run: |
+          set -euo pipefail
+          PATCH_FILE="xaero-wasmgc-subscript.patch"
+          [ -f "$PATCH_FILE" ] || PATCH_FILE="eml/xaero-wasmgc-subscript.patch"
+          TARGET="workspace/wasm-toolchain/teavm-eagler-patch/src/org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.java"
+          echo "[Xaero WasmGC Patch] Verifying patch file: $PATCH_FILE"
+          test -f "$PATCH_FILE"
+          echo "[Xaero WasmGC Patch] Verifying target file: $TARGET"
+          test -f "$TARGET"
+          if patch -d workspace -p1 --dry-run -R -s < "$PATCH_FILE" >/dev/null 2>&1; then
+            echo "[Xaero WasmGC Patch] Already applied in workspace."
+          else
+            echo "[Xaero WasmGC Patch] Applying $PATCH_FILE..."
+            patch -d workspace -p1 < "$PATCH_FILE"
+          fi
+          JAR="$(ls "$PWD"/workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar | head -1)"
+          DEPS="$(ls "$PWD"/eml/deps/*.jar | tr '\n' ':')"
+          mkdir -p eml/patch-wasmgc eml/patch-wasmgc-verify
+          echo "[Xaero WasmGC Patch] Compiling WasmGCGenerationVisitor.java against $JAR..."
+          javac -nowarn -cp "$JAR:$DEPS" -d eml/patch-wasmgc "$TARGET"
+          echo "[Xaero WasmGC Patch] Updating $JAR..."
+          jar uf "$JAR" -C eml/patch-wasmgc org/teavm/backend/wasm/generate/gc/methods/
+          echo "[Xaero WasmGC Patch] Extracting and byte-comparing WasmGCGenerationVisitor.class..."
+          (cd eml/patch-wasmgc-verify && jar xf "$JAR" org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.class)
+          cmp -s eml/patch-wasmgc/org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.class \
+                 eml/patch-wasmgc-verify/org/teavm/backend/wasm/generate/gc/methods/WasmGCGenerationVisitor.class
+          echo "[Xaero WasmGC Patch] Byte-for-byte match verified in $JAR"
+
       - name: Pre-link sanity check
         run: |
           set -uo pipefail
