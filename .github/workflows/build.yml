@@ -211,16 +211,39 @@ jobs:
           if [ -f ../../loader/teavm-compat/java/java/security/DigestInputStream.java ]; then
             javac -nowarn --patch-module java.base=../../loader/teavm-compat/java -d . ../../loader/teavm-compat/java/java/security/DigestInputStream.java
             jar uf ../../workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar java/security/DigestInputStream.class
+            echo "[patch-teavm] DigestInputStream.class added to classlib-override.jar"
           fi
+          echo "[patch-teavm] COMPLETED successfully."
 
       - name: Pre-link sanity check
         run: |
-          set -euo pipefail
-          test -f workspace/wasm-toolchain/build-single-html.js
-          test -f workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar
-          test -f workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar
-          jar tf workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar | grep -q "java/security/DigestInputStream.class"
-          echo "[Pre-link] Verified TeaVM JARs, classlib-override.jar (DigestInputStream), and build-single-html.js"
+          set -uo pipefail
+          echo "[Pre-link] Starting sanity checks..."
+          FAIL=0
+          for f in \
+            "workspace/wasm-toolchain/build-single-html.js" \
+            "workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar" \
+            "workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar"; do
+            if [ -f "$f" ]; then
+              echo "[Pre-link] PASS: $f exists"
+            else
+              echo "[Pre-link] FAIL: missing $f"
+              FAIL=1
+            fi
+          done
+          if [ -f loader/teavm-compat/java/java/security/DigestInputStream.java ]; then
+            if jar tf workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar | grep -F -x "java/security/DigestInputStream.class" >/dev/null; then
+              echo "[Pre-link] PASS: DigestInputStream.class in classlib-override.jar"
+            else
+              echo "[Pre-link] FAIL: DigestInputStream.class missing from classlib-override.jar"
+              FAIL=1
+            fi
+          fi
+          if [ "$FAIL" -ne 0 ]; then
+            echo "[Pre-link] FAILED."
+            exit 1
+          fi
+          echo "[Pre-link] COMPLETED: All checks passed."
 
       - name: Build the standalone HTML
         working-directory: workspace
