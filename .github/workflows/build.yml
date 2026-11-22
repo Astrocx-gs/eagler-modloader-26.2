@@ -276,6 +276,8 @@ jobs:
       - name: Integrate FlickBridge into Gui.render
         run: |
           set -euo pipefail
+          mkdir -p workspace/game/src/main/java/net/flick/bridge
+          cp -f loader/teavm-compat/java/net/flick/bridge/FlickBridge.java workspace/game/src/main/java/net/flick/bridge/FlickBridge.java
           GUI_FILE="${{ steps.diag_gui.outputs.gui_file }}"
           if [ -z "$GUI_FILE" ] || [ ! -f "$GUI_FILE" ]; then
             echo "[FlickBridge] ERROR: Validated Gui.java not found at: $GUI_FILE"
@@ -312,7 +314,7 @@ jobs:
               "                        int _x = Integer.parseInt(_p[2]), _y = Integer.parseInt(_p[3]);\n"
               "                        int _col = _p.length >= 5 && _p[4].startsWith(\"#\") ? (0xFF000000 | Integer.parseInt(_p[4].substring(1), 16)) : 0xFFFFFFFF;\n"
               "                        String _txt = _p[1].replace(\"\\\\n\", \"\\n\").replace(\"\\\\r\", \"\\r\").replace(\"\\\\|\", \"|\").replace(\"\\\\\\\\\", \"\\\\\");\n"
-              f"                        {gfx}.drawString(this.getFont(), _txt, _x, _y, _col);\n"
+              f"                        {gfx}.drawString(this.minecraft.font, _txt, _x, _y, _col);\n"
               "                    }\n"
               "                }\n"
               "            }\n"
