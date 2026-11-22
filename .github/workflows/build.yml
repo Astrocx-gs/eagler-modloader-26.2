@@ -199,7 +199,8 @@ jobs:
         run: |
           set -euo pipefail
           DEPS="$(ls "$PWD"/eml/deps/*.jar | tr '\n' ':')"
-          JAR="$(ls "$PWD"/workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-*.jar | head -1)"
+          JAR="$PWD/workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar"
+          test -f "$JAR"
           mkdir -p /tmp/rr-test && cd /tmp/rr-test
           javac -nowarn -cp "$DEPS" -d . "$GITHUB_WORKSPACE/loader/tools/PatchTeaVM.java"
           unzip -o -q "$JAR" org/teavm/dependency/ReferenceResolver.class
@@ -222,7 +223,8 @@ jobs:
           DEPS="$(ls "$PWD"/eml/deps/*.jar | tr '\n' ':')"
           mkdir -p eml/patch-teavm && cd eml/patch-teavm
           javac -nowarn -cp "$DEPS" -d . ../../loader/tools/PatchTeaVM.java
-          JAR="$(ls ../../workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-*.jar | head -1)"
+          JAR="../../workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar"
+          test -f "$JAR"
           unzip -o -q "$JAR" org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class
           java -cp "$DEPS:." PatchTeaVM org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class
           jar uf "$JAR" org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class
