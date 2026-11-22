@@ -104,22 +104,17 @@ jobs:
         id: diag_gui
         run: |
           set -euo pipefail
-          VALID=()
-          while IFS= read -r -d '' f; do
-            echo "[Diag] Candidate: $f"
-            if grep -q "^package net\.minecraft\.client\.gui;" "$f" && grep -q "class Gui" "$f" && grep -Eq "public\s+void\s+render\s*\(\s*GuiGraphics\s+[A-Za-z0-9_]+\s*,\s*DeltaTracker\s+[A-Za-z0-9_]+\s*\)\s*\{" "$f"; then
-              echo "[Diag]   -> VALID Gui.java"
-              VALID+=("$f")
-            else
-              echo "[Diag]   -> skipped (missing package/class/render)"
-            fi
-          done < <(find workspace -path "*net/minecraft/client/gui/Gui.java" -print0)
-          if [ "${#VALID[@]}" -ne 1 ]; then
-            echo "[Diag] ERROR: Expected 1 valid Gui.java, found ${#VALID[@]}"
+          TARGET="workspace/game/src/main/java/net/minecraft/client/gui/Gui.java"
+          if [ ! -f "$TARGET" ]; then
+            echo "[Diag] ERROR: Expected $TARGET not found"
+            find workspace -name "Gui.java" -print
             exit 1
           fi
-          echo "[Diag] Selected: ${VALID[0]}"
-          echo "gui_file=${VALID[0]}" >> "$GITHUB_OUTPUT"
+          echo "[Diag] Gradle modules (settings.gradle):"
+          [ -f workspace/settings.gradle ] && grep -E "include|project" workspace/settings.gradle || true
+          echo "[Diag] Selected: $TARGET"
+          grep -n "package \|class Gui\|void render(" "$TARGET" | head -n 15 || true
+          echo "gui_file=$TARGET" >> "$GITHUB_OUTPUT"
 
       - name: Download the mods listed in mods/modrinth.txt
         run: |
@@ -293,9 +288,9 @@ jobs:
           if "FlickBridge.dispatchHud" in src:
               print("[FlickBridge] Already integrated in", path)
               sys.exit(0)
-          m = re.search(r"(public\s+void\s+render\s*\(\s*GuiGraphics\s+(\w+)\s*,\s*DeltaTracker\s+\w+\s*\)\s*\{)", src)
+          m = re.search(r"(this\.hud\.extractRenderState\((\w+),\s*\w+\);)", src)
           if not m:
-              print("[FlickBridge] ERROR: Gui.render(GuiGraphics, DeltaTracker) not found in", path)
+              print("[FlickBridge] ERROR: this.hud.extractRenderState(...) not found in", path)
               sys.exit(1)
           gfx = m.group(2)
           hook = (
