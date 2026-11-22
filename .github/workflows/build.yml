@@ -1,16 +1,19 @@
 name: Build Eaglercraft 26.2
 
-# Builds Eaglercraft 26.2 with the Fabric mods in mods/ built in, as one standalone HTML file.
-# loader/weave.sh hooks build-time Fabric into the workspace's Gradle build; see the README.
-#
-# Test builds (every push that changes mods/ or loader/, and manual runs): faster, lighter compression,
-# readable names in crash reports, published as a pre-release. Release builds (push a tag like v1.0, or a manual run with "release"
-# ticked): maximum compression, published as a normal release.
+# Builds Eaglercraft 26.2 with Fabric mods from mods/ into a standalone HTML file.
+# Build-time Fabric integration is applied by loader/weave.sh.
 
 on:
   push:
     branches: [main]
-    paths: ["mods/**", "loader/**", "addons/**", "!flick-build-worker.js", "!flick-standalone.html", "!*.md", "!docs/**"]
+    paths:
+      - "mods/**"
+      - "loader/**"
+      - "addons/**"
+      - "!flick-build-worker.js"
+      - "!flick-standalone.html"
+      - "!*.md"
+      - "!docs/**"
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -19,7 +22,7 @@ on:
         type: boolean
         default: false
       diagnostic:
-        description: "Diagnostic build (readable names in crash reports; published as a draft only you can see)"
+        description: "Diagnostic build (readable names; published as a draft)"
         type: boolean
         default: false
       mod_urls:
@@ -39,245 +42,139 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # The Eaglercraft 26.2 workspace is downloaded at build time and never committed here.
   WORKSPACE_REPO: https://github.com/kingjoeishere/Eaglercraft-26.2-Workspace
   WORKSPACE_COMMIT: f73bff91f0f0840bc958c09ab536dbba1e146b2e
 
 jobs:
   build:
-    runs-on: ubuntu-latest   # public repos: 4 cores, 16 GB RAM
+    runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
-      - name: Download requested Fabric JARs
-        if: ${{ inputs.mod_urls != '' }}
-        run: |
-          IFS=',' read -ra URLS <<< "${{ inputs.mod_urls }}"
-          for u in "${URLS[@]}"; do
-            [ -n "$u" ] && curl -fSL --retry 3 -o "mods/$(basename "$u")" "$u"
-          done
+      - name: Check out this repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: |
             17
             25
 
-
-      - name: Cache Gradle & Wrapper
+      - name: Cache Gradle downloads
         uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-            workspace/.gradle
-          key: gradle-26.2-${{ env.WORKSPACE_COMMIT }}-${{ hashFiles('loader/**') }}
+          key: gradle-26.2-${{ runner.os }}-${{ env.WORKSPACE_COMMIT }}-${{ hashFiles('loader/**') }}
           restore-keys: |
-            gradle-26.2-${{ env.WORKSPACE_COMMIT }}-
+            gradle-26.2-${{ runner.os }}-${{ env.WORKSPACE_COMMIT }}-
 
-      - name: Cache Eaglercraft 26.2 Workspace & Compiled Classes
-        id: cache-workspace
-        uses: actions/cache@v4
-        with:
-          path: |
-            workspace
-            workspace/build/classes
-            workspace/build/libs
-          key: workspace-classes-26.2-${{ env.WORKSPACE_COMMIT }}-${{ hashFiles('workspace/build.gradle') }}
-          restore-keys: |
-            workspace-classes-26.2-${{ env.WORKSPACE_COMMIT }}-
-
-      - name: Download the Eaglercraft 26.2 workspace
-        if: steps.cache-workspace.outputs.cache-hit != 'true'
-        run: |
-          git init -q workspace
-          cd workspace
-          git remote add origin "$WORKSPACE_REPO"
-          git fetch -q --depth 1 origin "$WORKSPACE_COMMIT"
-          git checkout -q FETCH_HEAD
-          chmod +x gradlew
-          # Gradle itself is downloaded on first use; retry, since that download sometimes times out
-          for i in 1 2 3 4 5; do ./gradlew --no-daemon --version >/dev/null && break; echo "Gradle download failed (try $i), retrying"; sleep $((i * 20)); done
-
-      - name: Download the mods listed in mods/modrinth.txt
-        run: |
-          if [ -f mods/modrinth.txt ]; then python3 tools/modrinth.py download 26.2 mods/modrinth.txt mods; fi
-          ls mods
-
-      # Quick checks first, so a mod that can't work stops the build in minutes instead of after the
-      # long browser compile.
-      - name: "Check the mods: can each jar be built in? (seconds)"
-        run: |
-          mkdir -p eml
-          python3 loader/scan-mods.py mods eml/mod-check.md workspace || { cat eml/mod-check.md >> "$GITHUB_STEP_SUMMARY"; exit 1; }
-          cat eml/mod-check.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Set up build-time Fabric
-        run: chmod +x loader/weave.sh && loader/weave.sh workspace eml
-
-      - name: "Check the mods: apply them to the game (a few minutes)"
-        working-directory: workspace
-        run: ./gradlew --no-daemon --console=plain :game:compileJava
-      - name: Print eml/weave.log on failure
-        if: failure()
-        run: |
-          if [ -f eml/weave.log ]; then
-            echo "=== eml/weave.log ==="
-            cat eml/weave.log
-          elif [ -f ../eml/weave.log ]; then
-            echo "=== ../eml/weave.log ==="
-            cat ../eml/weave.log
-          else
-            echo "eml/weave.log not found"
-          fi
-
-      - name: Explain a failed mod check
-        if: failure()
-        run: |
-          {
-            echo "## Why the build stopped"; echo
-            if [ -f eml/weave.log ]; then
-              echo "Applying the mods to the game failed. The important part of the log:"; echo; echo '```'
-              grep -E "Incompatible|requires|Mod resolution|Unhandled|Caused by|Exception|ERROR|error:" eml/weave.log | head -40
-              echo '```'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Free disk space and add swap
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
-          sudo fallocate -l 8G /swapfile2 && sudo chmod 600 /swapfile2 && sudo mkswap /swapfile2 && sudo swapon /swapfile2 || true
-          free -h; df -h /
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Game sounds from Mojang (not in the workspace)
-        run: |
-          python3 loader/fetch-sounds.py 26.2 eml/sounds eml/music
-          cd workspace
-          mkdir -p target_teavm/build/web
-          # the workspace's own EPK packager, run the way its assets.epk task runs it (desktop platform)
-          cat > ../eml/epk.init.gradle <<'EOF2'
-          allprojects {
-            afterEvaluate { p ->
-              if (p.path != ":target_lwjgl_desktop") return
-              ["sounds", "music"].each { n ->
-                p.tasks.register("emlPack_" + n, JavaExec) {
-                  classpath = p.sourceSets.main.runtimeClasspath
-                  mainClass = "net.lax1dude.eaglercraft.v1_8.sp.server.export.EPKPackagerMain"
-                  args(new File(p.rootDir, "../eml/" + n).absolutePath,
-                       new File(p.rootDir, "target_teavm/build/web/" + n + ".epk").absolutePath,
-                       n + ".epk", "--include-web-unreachable")
-                }
-              }
-            }
-          }
-          EOF2
-          ./gradlew --no-daemon --console=plain -I ../eml/epk.init.gradle :target_lwjgl_desktop:emlPack_sounds :target_lwjgl_desktop:emlPack_music
-          ls -la target_teavm/build/web/
-
-      - name: Verify PatchTeaVM idempotency on ReferenceResolver
+      # Do not cache the workspace itself: it is modified by weaving, patches and compilation.
+      # Reusing it can silently carry stale source/classes into a later build.
+      - name: Download the pinned Eaglercraft workspace
         run: |
           set -euo pipefail
-          DEPS="$(ls "$PWD"/eml/deps/*.jar | tr '\n' ':')"
-          JAR="$(ls "$PWD"/workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-*.jar | head -1)"
-          mkdir -p /tmp/rr-test && cd /tmp/rr-test
-          javac -nowarn -cp "$DEPS" -d . "$GITHUB_WORKSPACE/loader/tools/PatchTeaVM.java"
-          unzip -o -q "$JAR" org/teavm/dependency/ReferenceResolver.class
-          echo "=== Before Run 1 (javap reportError) ==="
-          javap -p -c org/teavm/dependency/ReferenceResolver.class | grep -A 25 "reportError" || true
-          echo "=== Run 1 (unpatched -> patched) ==="
-          java -cp "$DEPS:." PatchTeaVM org/teavm/dependency/ReferenceResolver.class
-          echo "=== After Run 1 (verify Diagnostics.warning) ==="
-          javap -p -c org/teavm/dependency/ReferenceResolver.class | grep -A 25 "reportError" | grep -F "org/teavm/diagnostics/Diagnostics.warning"
-          cp org/teavm/dependency/ReferenceResolver.class ReferenceResolver.class.after1
-          echo "=== Run 2 (already patched -> no-op) ==="
-          java -cp "$DEPS:." PatchTeaVM org/teavm/dependency/ReferenceResolver.class | tee /tmp/rr-run2.log
-          grep -F "already patched" /tmp/rr-run2.log >/dev/null
-          cmp -s org/teavm/dependency/ReferenceResolver.class ReferenceResolver.class.after1
-          jar tf "$JAR" >/dev/null
-          echo "[PatchTeaVM] Idempotency, Diagnostics.warning, & JAR integrity verified."
-
-      - name: Patch TeaVM for mods (null checks, missing classes, reflection, Files.createDirectories, UTF8)
-        run: |
-          DEPS="$(ls "$PWD"/eml/deps/*.jar | tr '\n' ':')"
-          mkdir -p eml/patch-teavm && cd eml/patch-teavm
-          javac -nowarn -cp "$DEPS" -d . ../../loader/tools/PatchTeaVM.java
-          JAR="$(ls ../../workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-*.jar | head -1)"
-          unzip -o -q "$JAR" org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class
-          java -cp "$DEPS:." PatchTeaVM org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class
-          jar uf "$JAR" org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class
-          # TeaVM's classlib (java.lang.reflect.Constructor/Method, java.nio.file.Files): patched copies go in
-          # Eaglercraft's classlib-override.jar, which every program reads before the stock classlib
-          curl -fsSL --retry 5 -o teavm-classlib.jar https://repo1.maven.org/maven2/org/teavm/teavm-classlib/0.13.1/teavm-classlib-0.13.1.jar
-          CL="org/teavm/classlib/java/lang/reflect/TConstructor.class org/teavm/classlib/java/lang/reflect/TMethod.class org/teavm/classlib/java/nio/file/TFiles.class org/teavm/classlib/java/nio/charset/TCharset.class"
-          unzip -o -q teavm-classlib.jar $CL
-          java -cp "$DEPS:." PatchTeaVM $CL
-          jar uf ../../workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar $CL
-          # Compile java.security.DigestInputStream with --patch-module java.base so Java 25 allows it, and add to classlib-override.jar
-          find ../../workspace/teavm-compat/src/main/java -name DigestInputStream.java -delete || true
-          if [ -f ../../loader/teavm-compat/java/java/security/DigestInputStream.java ]; then
-            javac -nowarn --patch-module java.base=../../loader/teavm-compat/java -d . ../../loader/teavm-compat/java/java/security/DigestInputStream.java
-            jar uf ../../workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar java/security/DigestInputStream.class
-            echo "[patch-teavm] DigestInputStream.class added to classlib-override.jar"
-          fi
-          echo "[patch-teavm] COMPLETED successfully."
-
-
-      - name: Pre-link sanity check
-        run: |
-          set -uo pipefail
-          echo "[Pre-link] Starting sanity checks..."
-          FAIL=0
-          for f in \
-            "workspace/wasm-toolchain/build-single-html.js" \
-            "workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar" \
-            "workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar"; do
-            if [ -f "$f" ]; then
-              echo "[Pre-link] PASS: $f exists"
-            else
-              echo "[Pre-link] FAIL: missing $f"
-              FAIL=1
+          git init -q workspace
+          git -C workspace remote add origin "$WORKSPACE_REPO"
+          git -C workspace fetch -q --depth 1 origin "$WORKSPACE_COMMIT"
+          git -C workspace checkout -q FETCH_HEAD
+          chmod +x workspace/gradlew
+          git -C workspace rev-parse HEAD
+          for i in 1 2 3 4 5; do
+            if (cd workspace && ./gradlew --no-daemon --version >/dev/null); then
+              break
             fi
+            if [ "$i" -eq 5 ]; then
+              echo "Gradle wrapper failed after 5 attempts."
+              exit 1
+            fi
+            echo "Gradle download failed (attempt $i); retrying."
+            sleep $((i * 20))
           done
-          if [ -f loader/teavm-compat/java/java/security/DigestInputStream.java ]; then
-            if jar tf workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar | grep -F -x "java/security/DigestInputStream.class" >/dev/null; then
-              echo "[Pre-link] PASS: DigestInputStream.class in classlib-override.jar"
-            else
-              echo "[Pre-link] FAIL: DigestInputStream.class missing from classlib-override.jar"
-              FAIL=1
-            fi
-          fi
-          if [ "$FAIL" -ne 0 ]; then
-            echo "[Pre-link] FAILED."
-            exit 1
-          fi
-          echo "[Pre-link] COMPLETED: All checks passed."
 
+      - name: Download requested Fabric JARs
+        if: ${{ inputs.mod_urls != '' }}
+        env:
+          MOD_URLS: ${{ inputs.mod_urls }}
+        run: |
+          set -euo pipefail
+          mkdir -p mods
+          IFS=',' read -r -a URLS <<< "$MOD_URLS"
+          for u in "${URLS[@]}"; do
+            u="${u#"${u%%[![:space:]]*}"}"
+            u="${u%"${u##*[![:space:]]}"}"
+            [ -n "$u" ] || continue
+            name="$(basename "${u%%\?*}")"
+            case "$name" in
+              *.jar) ;;
+              *) echo "Refusing URL without a .jar filename: $u"; exit 1 ;;
+            esac
+            curl -fSL --retry 3 --retry-all-errors -o "mods/$name" "$u"
+          done
+
+      - name: Download mods listed in mods/modrinth.txt
+        run: |
+          set -euo pipefail
+          mkdir -p mods eml
+          if [ -f mods/modrinth.txt ]; then
+            python3 tools/modrinth.py download 26.2 mods/modrinth.txt mods
+          fi
+          find mods -maxdepth 1 -type f -printf '%f\n' | sort
+
+      - name: Check that each mod can be built in
+        run: |
+          set -euo pipefail
+          mkdir -p eml
+          python3 loader/scan-mods.py mods eml/mod-check.md workspace || {
+            [ ! -f eml/mod-check.md ] || cat eml/mod-check.md >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          [ ! -f eml/mod-check.md ] || cat eml/mod-check.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up build-time Fabric
+        run: |
+          set -euo pipefail
+          chmod +x loader/weave.sh
+          loader/weave.sh workspace eml
+
+      # Integrate before compileJava so the modified Gui.java is actually compiled.
       - name: Integrate FlickBridge into Gui.render
         run: |
           set -euo pipefail
-          GUI_FILES="$(find workspace -path "*net/minecraft/client/gui/Gui.java")"
-          COUNT="$(echo "$GUI_FILES" | grep -c . || true)"
-          if [ "$COUNT" -ne 1 ]; then
-            echo "[FlickBridge] ERROR: Expected 1 Gui.java, found $COUNT"
-            exit 1
-          fi
-          GUI_FILE="$GUI_FILES"
-          python3 - "$GUI_FILE" << 'PY'
-          import sys, re
-          path = sys.argv[1]
-          src = open(path, "r", encoding="utf-8").read()
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path("workspace/src/main/java")
+          matches = sorted(
+              p for p in root.rglob("Gui.java")
+              if p.as_posix().endswith("/net/minecraft/client/gui/Gui.java")
+          ) if root.is_dir() else []
+
+          if len(matches) != 1:
+              print(f"[FlickBridge] ERROR: Expected 1 Gui.java in {root}, found {len(matches)}")
+              for p in matches:
+                  print(p)
+              sys.exit(1)
+
+          path = matches[0]
+          src = path.read_text(encoding="utf-8")
           if "FlickBridge.dispatchHud" in src:
               print("[FlickBridge] Already integrated in", path)
               sys.exit(0)
-          m = re.search(r"(public\s+void\s+render\s*\(\s*GuiGraphics\s+(\w+)\s*,\s*DeltaTracker\s+\w+\s*\)\s*\{)", src)
-          if not m:
-              print("[FlickBridge] ERROR: Gui.render(GuiGraphics, DeltaTracker) not found in", path)
+
+          import re
+          pattern = re.compile(
+              r"(public\s+void\s+render\s*\(\s*GuiGraphics\s+(\w+)\s*,\s*DeltaTracker\s+\w+\s*\)\s*\{)"
+          )
+          found = list(pattern.finditer(src))
+          if len(found) != 1:
+              print(f"[FlickBridge] ERROR: Expected exactly one Gui.render(GuiGraphics, DeltaTracker) method; found {len(found)} in {path}")
               sys.exit(1)
+
+          m = found[0]
           gfx = m.group(2)
           hook = (
               "\n        net.flick.bridge.FlickBridge.initRegistry();\n"
@@ -304,49 +201,205 @@ jobs:
               "            }\n"
               "        }\n"
           )
-          src = src[:m.end()] + hook + src[m.end():]
-          open(path, "w", encoding="utf-8").write(src)
+          updated = src[:m.end()] + hook + src[m.end():]
+          path.write_text(updated, encoding="utf-8")
           print("[FlickBridge] Integrated into", path)
           PY
 
-      - name: Build the standalone HTML
+      - name: Compile the modded game sources
+        working-directory: workspace
+        run: ./gradlew --no-daemon --console=plain :game:compileJava
+
+      - name: Print weave log on failure
+        if: failure()
+        run: |
+          if [ -f eml/weave.log ]; then
+            cat eml/weave.log
+          else
+            echo "eml/weave.log not found"
+          fi
+
+      - name: Explain a failed mod check
+        if: failure()
+        run: |
+          {
+            echo "## Why the build stopped"
+            echo
+            if [ -s eml/weave.log ]; then
+              echo '```'
+              grep -E "Incompatible|requires|Mod resolution|Unhandled|Caused by|Exception|ERROR|error:" eml/weave.log | head -40 || true
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Free disk space and add swap
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo fallocate -l 8G /swapfile2 && sudo chmod 600 /swapfile2 && sudo mkswap /swapfile2 && sudo swapon /swapfile2 || true
+          free -h
+          df -h /
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Fetch Mojang game sounds and package EPK files
+        run: |
+          set -euo pipefail
+          python3 loader/fetch-sounds.py 26.2 eml/sounds eml/music
+          cd workspace
+          mkdir -p target_teavm/build/web
+          cat > ../eml/epk.init.gradle <<'EOF2'
+          allprojects {
+            afterEvaluate { p ->
+              if (p.path != ":target_lwjgl_desktop") return
+              ["sounds", "music"].each { n ->
+                p.tasks.register("emlPack_" + n, JavaExec) {
+                  classpath = p.sourceSets.main.runtimeClasspath
+                  mainClass = "net.lax1dude.eaglercraft.v1_8.sp.server.export.EPKPackagerMain"
+                  args(new File(p.rootDir, "../eml/" + n).absolutePath,
+                       new File(p.rootDir, "target_teavm/build/web/" + n + ".epk").absolutePath,
+                       n + ".epk", "--include-web-unreachable")
+                }
+              }
+            }
+          }
+          EOF2
+          ./gradlew --no-daemon --console=plain -I ../eml/epk.init.gradle :target_lwjgl_desktop:emlPack_sounds :target_lwjgl_desktop:emlPack_music
+          ls -la target_teavm/build/web/
+
+      - name: Verify PatchTeaVM idempotency on ReferenceResolver
+        run: |
+          set -euo pipefail
+          DEPS="$(find "$GITHUB_WORKSPACE/eml/deps" -maxdepth 1 -type f -name '*.jar' -print | sort | paste -sd: -)"
+          [ -n "$DEPS" ] || { echo "No dependency JARs found in eml/deps"; exit 1; }
+          JAR="$GITHUB_WORKSPACE/workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar"
+          [ -f "$JAR" ] || { echo "Expected TeaVM core JAR missing: $JAR"; exit 1; }
+          mkdir -p /tmp/rr-test
+          cd /tmp/rr-test
+          javac -nowarn -cp "$DEPS" -d . "$GITHUB_WORKSPACE/loader/tools/PatchTeaVM.java"
+          unzip -o -q "$JAR" org/teavm/dependency/ReferenceResolver.class
+          echo "=== Before Run 1 ==="
+          javap -p -c org/teavm/dependency/ReferenceResolver.class | grep -A 25 "reportError" || true
+          echo "=== Run 1 ==="
+          java -cp "$DEPS:." PatchTeaVM org/teavm/dependency/ReferenceResolver.class
+          javap -p -c org/teavm/dependency/ReferenceResolver.class | grep -A 25 "reportError" | grep -F "org/teavm/diagnostics/Diagnostics.warning"
+          cp org/teavm/dependency/ReferenceResolver.class ReferenceResolver.class.after1
+          echo "=== Run 2 ==="
+          java -cp "$DEPS:." PatchTeaVM org/teavm/dependency/ReferenceResolver.class | tee /tmp/rr-run2.log
+          grep -F "already patched" /tmp/rr-run2.log >/dev/null
+          cmp -s org/teavm/dependency/ReferenceResolver.class ReferenceResolver.class.after1
+          jar tf "$JAR" >/dev/null
+          echo "[PatchTeaVM] Idempotency and JAR integrity verified."
+
+      - name: Patch TeaVM for mods
+        run: |
+          set -euo pipefail
+          DEPS="$(find "$GITHUB_WORKSPACE/eml/deps" -maxdepth 1 -type f -name '*.jar' -print | sort | paste -sd: -)"
+          [ -n "$DEPS" ] || { echo "No dependency JARs found in eml/deps"; exit 1; }
+          CORE_JAR="$GITHUB_WORKSPACE/workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar"
+          OVERRIDE_JAR="$GITHUB_WORKSPACE/workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar"
+          [ -f "$CORE_JAR" ] || { echo "Missing $CORE_JAR"; exit 1; }
+          [ -f "$OVERRIDE_JAR" ] || { echo "Missing $OVERRIDE_JAR"; exit 1; }
+          mkdir -p "$GITHUB_WORKSPACE/eml/patch-teavm"
+          cd "$GITHUB_WORKSPACE/eml/patch-teavm"
+          javac -nowarn -cp "$DEPS" -d . "$GITHUB_WORKSPACE/loader/tools/PatchTeaVM.java"
+          unzip -o -q "$CORE_JAR" \
+            org/teavm/model/transformation/NullCheckInsertion.class \
+            org/teavm/vm/TeaVM.class \
+            org/teavm/dependency/ReferenceResolver.class
+          java -cp "$DEPS:." PatchTeaVM \
+            org/teavm/model/transformation/NullCheckInsertion.class \
+            org/teavm/vm/TeaVM.class \
+            org/teavm/dependency/ReferenceResolver.class
+          jar uf "$CORE_JAR" \
+            org/teavm/model/transformation/NullCheckInsertion.class \
+            org/teavm/vm/TeaVM.class \
+            org/teavm/dependency/ReferenceResolver.class
+
+          curl -fsSL --retry 5 --retry-all-errors \
+            -o teavm-classlib.jar \
+            https://repo1.maven.org/maven2/org/teavm/teavm-classlib/0.13.1/teavm-classlib-0.13.1.jar
+          CL=(
+            org/teavm/classlib/java/lang/reflect/TConstructor.class
+            org/teavm/classlib/java/lang/reflect/TMethod.class
+            org/teavm/classlib/java/nio/file/TFiles.class
+            org/teavm/classlib/java/nio/charset/TCharset.class
+          )
+          unzip -o -q teavm-classlib.jar "${CL[@]}"
+          java -cp "$DEPS:." PatchTeaVM "${CL[@]}"
+          jar uf "$OVERRIDE_JAR" "${CL[@]}"
+
+          if [ -f "$GITHUB_WORKSPACE/loader/teavm-compat/java/java/security/DigestInputStream.java" ]; then
+            javac -nowarn --patch-module java.base="$GITHUB_WORKSPACE/loader/teavm-compat/java" \
+              -d . "$GITHUB_WORKSPACE/loader/teavm-compat/java/java/security/DigestInputStream.java"
+            jar uf "$OVERRIDE_JAR" java/security/DigestInputStream.class
+            echo "[patch-teavm] DigestInputStream.class added."
+          fi
+          echo "[patch-teavm] Completed."
+
+      - name: Pre-link sanity check
+        run: |
+          set -euo pipefail
+          CORE_JAR="workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar"
+          OVERRIDE_JAR="workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar"
+          for f in workspace/wasm-toolchain/build-single-html.js "$CORE_JAR" "$OVERRIDE_JAR"; do
+            [ -f "$f" ] || { echo "[Pre-link] FAIL: missing $f"; exit 1; }
+            echo "[Pre-link] PASS: $f"
+          done
+          if [ -f loader/teavm-compat/java/java/security/DigestInputStream.java ]; then
+            jar tf "$OVERRIDE_JAR" | grep -F -x "java/security/DigestInputStream.class" >/dev/null
+            echo "[Pre-link] PASS: DigestInputStream.class"
+          fi
+          jar tf "$CORE_JAR" >/dev/null
+          jar tf "$OVERRIDE_JAR" >/dev/null
+          echo "[Pre-link] Completed."
+
+      - name: Build standalone HTML
         working-directory: workspace
         env:
           RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.release == true }}
-          # test builds keep readable names in crash reports; releases don't
           DIAGNOSTIC: ${{ inputs.diagnostic == true || !(startsWith(github.ref, 'refs/tags/v') || inputs.release == true) }}
           EAGLER_BUILD_CAP_MIB: "13312"
           GRADLE_OPTS: "-Dorg.gradle.daemon=false"
         run: |
+          set -euo pipefail
           mkdir -p ../out
           npm install --no-audit --no-fund
-          if [ "$RELEASE" = "true" ]; then FAST=""; else FAST="--fast-package"; fi
+          FAST=()
+          if [ "$RELEASE" != "true" ]; then FAST+=(--fast-package); fi
           if [ "$DIAGNOSTIC" = "true" ]; then
-            FAST="$FAST --diagnostic"
-            # also keep readable names in the singleplayer server worker's crash reports
+            FAST+=(--diagnostic)
             export EAGLER_SERVER_DIAGNOSTIC=1
-            # the workspace only installs a named server build for local debugging; install it here too
-            sed -i 's/^  if (diagnostic) {$/  if (false) {/' wasm-toolchain/link-server-standalone.js
-            grep -q '^  if (false) {$' wasm-toolchain/link-server-standalone.js
+            python3 - <<'PY'
+          from pathlib import Path
+          p = Path("wasm-toolchain/link-server-standalone.js")
+          s = p.read_text()
+          old = "  if (diagnostic) {"
+          if s.count(old) != 1:
+              raise SystemExit(f"Expected exactly one diagnostic conditional in {p}; found {s.count(old)}")
+          p.write_text(s.replace(old, "  if (false) {", 1))
+          PY
           fi
-          node wasm-toolchain/build-single-html.js $FAST --output ../out/eaglercraft-26.2-modded.html
+          node wasm-toolchain/build-single-html.js "${FAST[@]}" --output ../out/eaglercraft-26.2-modded.html
           python3 ../loader/inject-addons.py ../addons ../out/eaglercraft-26.2-modded.html
+          test -s ../out/eaglercraft-26.2-modded.html
           grep -v '^#' ../eml/disabled-injectors.txt > ../out/turned-off-injectors.txt 2>/dev/null || true
+          ls -lh ../out/
 
       - name: Capture TeaVM linker diagnostic on failure
         if: failure()
         run: |
           LOG="workspace/wasm-toolchain/generated/client-precise-link.log"
           if [ -f "$LOG" ]; then
-            echo "=== Last 180 lines of $LOG ==="
             tail -n 180 "$LOG"
-            echo "=== Fatal errors / Exceptions / Caused by ==="
             grep -n -C 8 -E "ERROR|Exception|AssertionError|ClassCastException|Caused by:" "$LOG" | tail -n 120 || true
           else
             echo "Diagnostic log not found at $LOG"
           fi
 
-      - name: Upload client-precise-link.log on failure
+      - name: Upload client linker diagnostic on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -355,14 +408,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Upload build
+      - name: Upload standalone build artifact
         uses: actions/upload-artifact@v4
         with:
           name: eaglercraft-26.2-modded
           path: |
-            out/
+            out/eaglercraft-26.2-modded.html
+            out/turned-off-injectors.txt
             eml/weave.log
             eml/gen.log
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Publish
@@ -372,31 +427,56 @@ jobs:
           RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.release == true }}
           DIAGNOSTIC: ${{ inputs.diagnostic == true }}
         run: |
+          set -euo pipefail
           if [ "$DIAGNOSTIC" = "true" ]; then
-            tag="diag-${GITHUB_RUN_NUMBER}"; title="Diagnostic build ${GITHUB_RUN_NUMBER}"; kind=(--draft)
+            tag="diag-${GITHUB_RUN_NUMBER}"
+            title="Diagnostic build ${GITHUB_RUN_NUMBER}"
+            kind=(--draft)
           elif [ "$RELEASE" = "true" ]; then
-            if [[ "$GITHUB_REF" == refs/tags/* ]]; then tag="${GITHUB_REF_NAME}"; else tag="release-${GITHUB_RUN_NUMBER}"; fi
-            title="$tag"; kind=(--latest)
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              tag="${GITHUB_REF_NAME}"
+            else
+              tag="release-${GITHUB_RUN_NUMBER}"
+            fi
+            title="$tag"
+            kind=(--latest)
           else
-            tag="test-${GITHUB_RUN_NUMBER}"; title="Test build ${GITHUB_RUN_NUMBER}"; kind=(--prerelease)
+            tag="test-${GITHUB_RUN_NUMBER}"
+            title="Test build ${GITHUB_RUN_NUMBER}"
+            kind=(--prerelease)
           fi
           {
-            if [ "$RELEASE" != "true" ]; then echo "Test build: lighter compression, so the file is a bit larger."; echo; fi
+            if [ "$RELEASE" != "true" ]; then
+              echo "Test build: lighter compression, so the file is a bit larger."
+              echo
+            fi
             echo "Eaglercraft 26.2 with these Fabric mods built in (from ${GITHUB_SHA::7}):"
-            echo; ls mods | grep '\.jar$' | sed 's/^/- /'
-            if ls addons/*.js >/dev/null 2>&1; then echo; echo "Add-ons:"; echo; ls addons/*.js | xargs -n1 basename | sed 's/^/- /'; fi
-            if [ -s eml/mod-check.md ]; then echo; sed 's/^## Mod check$/### Mod check/' eml/mod-check.md; fi
+            echo
+            find mods -maxdepth 1 -type f -name '*.jar' -printf '%f\n' | sort | sed 's/^/- /'
+            if compgen -G "addons/*.js" >/dev/null; then
+              echo
+              echo "Add-ons:"
+              find addons -maxdepth 1 -type f -name '*.js' -printf '%f\n' | sort | sed 's/^/- /'
+            fi
+            if [ -s eml/mod-check.md ]; then
+              echo
+              sed 's/^## Mod check$/### Mod check/' eml/mod-check.md
+            fi
             if [ -s out/turned-off-injectors.txt ]; then
-              echo; echo "These mod injections don't fit Eaglercraft's version of the game and were turned off:"
-              echo; sed 's/^/- /' out/turned-off-injectors.txt
+              echo
+              echo "These mod injections don't fit Eaglercraft's version of the game and were turned off:"
+              echo
+              sed 's/^/- /' out/turned-off-injectors.txt
             fi
           } > notes.md
-          gh release create "$tag" out/*.html --title "$title" --notes-file notes.md "${kind[@]}"
+          gh release create "$tag" out/eaglercraft-26.2-modded.html \
+            --title "$title" --notes-file notes.md "${kind[@]}"
 
-      - name: Upload successful build as GitHub Actions artifact
+      - name: Upload successful build for cache integration
         if: ${{ success() && inputs.cache_key != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: flick-${{ inputs.cache_key }}
-          path: workspace/build/**/*.html
+          path: out/eaglercraft-26.2-modded.html
           if-no-files-found: error
+          retention-days: 14
