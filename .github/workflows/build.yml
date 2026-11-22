@@ -227,7 +227,31 @@ jobs:
           test -f "$JAR"
           unzip -o -q "$JAR" org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class
           java -cp "$DEPS:." PatchTeaVM org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class
-          jar uf "$JAR" org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class
+          cp "$JAR" "$JAR.tmp"
+          trap 'rm -f "$JAR.tmp"' EXIT
+          jar uf "$JAR.tmp" org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class
+          jar tf "$JAR.tmp" >/dev/null
+          [ "$(jar tf "$JAR.tmp" | grep -c '^org/teavm/vm/TeaVM\.class$')" -eq 1 ]
+          [ "$(jar tf "$JAR.tmp" | grep -c '^org/teavm/model/transformation/NullCheckInsertion\.class$')" -eq 1 ]
+          [ "$(jar tf "$JAR.tmp" | grep -c '^org/teavm/dependency/ReferenceResolver\.class$')" -eq 1 ]
+          [ "$(javap -cp "$JAR.tmp" -p -s org.teavm.vm.TeaVM | grep -c 'optimizeMethodCacheMiss\$orig(')" -eq 1 ]
+          [ "$(javap -cp "$JAR.tmp" -p -s org.teavm.vm.TeaVM | grep -c 'optimizeMethodCacheMiss(')" -eq 1 ]
+          [ "$(javap -cp "$JAR.tmp" -p -s org.teavm.model.transformation.NullCheckInsertion | grep -c 'transformProgram\$orig(')" -eq 1 ]
+          [ "$(javap -cp "$JAR.tmp" -p -s org.teavm.model.transformation.NullCheckInsertion | grep -c 'transformProgram(')" -eq 1 ]
+          javap -cp "$JAR.tmp" -p -c org.teavm.dependency.ReferenceResolver | grep -q 'org/teavm/diagnostics/Diagnostics.warning'
+          cat << 'EOF' > /tmp/VerifyTmpJar.java
+          public class VerifyTmpJar {
+            public static void main(String[] args) throws Exception {
+              Class.forName("org.teavm.vm.TeaVM");
+              Class.forName("org.teavm.model.transformation.NullCheckInsertion");
+              Class.forName("org.teavm.dependency.ReferenceResolver");
+            }
+          }
+          EOF
+          javac -d /tmp /tmp/VerifyTmpJar.java
+          java -Xverify:all -cp "$JAR.tmp:$DEPS:/tmp" VerifyTmpJar
+          mv -f "$JAR.tmp" "$JAR"
+          trap - EXIT
           # TeaVM's classlib (java.lang.reflect.Constructor/Method, java.nio.file.Files): patched copies go in
           # Eaglercraft's classlib-override.jar, which every program reads before the stock classlib
           curl -fsSL --retry 5 -o teavm-classlib.jar https://repo1.maven.org/maven2/org/teavm/teavm-classlib/0.13.1/teavm-classlib-0.13.1.jar
@@ -274,6 +298,70 @@ jobs:
             exit 1
           fi
           echo "[Pre-link] COMPLETED: All checks passed."
+
+      - name: Verify patched TeaVM JAR and runtime classpath
+        run: |
+          set -euo pipefail
+          JAR="workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar"
+          test -f "$JAR"
+          ZIP_COUNT="$(jar tf "$JAR" | grep -c '^org/teavm/vm/TeaVM\.class$')"
+          if [ "$ZIP_COUNT" -ne 1 ]; then
+            echo "[Verify-TeaVM] FAIL: expected 1 ZIP entry for org/teavm/vm/TeaVM.class in $JAR, found $ZIP_COUNT"
+            exit 1
+          fi
+          echo "[Verify-TeaVM] PASS: 1 ZIP entry for org/teavm/vm/TeaVM.class"
+
+          ORIG_COUNT="$(javap -cp "$JAR" -p -s org.teavm.vm.TeaVM | grep -c 'optimizeMethodCacheMiss\$orig(' || true)"
+          WRAP_COUNT="$(javap -cp "$JAR" -p -s org.teavm.vm.TeaVM | grep -c 'optimizeMethodCacheMiss(' || true)"
+          if [ "$ORIG_COUNT" -ne 1 ] || [ "$WRAP_COUNT" -ne 1 ]; then
+            echo "[Verify-TeaVM] FAIL: expected optimizeMethodCacheMiss$orig=1 and optimizeMethodCacheMiss=1, got orig=$ORIG_COUNT wrap=$WRAP_COUNT"
+            javap -cp "$JAR" -p -s org.teavm.vm.TeaVM | grep -A 2 'optimizeMethodCacheMiss' || true
+            exit 1
+          fi
+          echo "[Verify-TeaVM] PASS: optimizeMethodCacheMiss=1, optimizeMethodCacheMiss\$orig=1"
+
+          mkdir -p /tmp/teavm-rt-check
+          unzip -p "$JAR" org/teavm/vm/TeaVM.class > /tmp/teavm-rt-check/expected-TeaVM.class
+          EXPECTED_SHA="$(sha256sum /tmp/teavm-rt-check/expected-TeaVM.class | awk '{print $1}')"
+          echo "[Verify-TeaVM] Expected TeaVM.class SHA-256: $EXPECTED_SHA"
+
+          TOOL_CP="$(cd workspace && ./gradlew --no-daemon -q :target_teavm_wasm_gc:printStandaloneClasspaths | node -e '
+            const fs = require("fs");
+            const data = JSON.parse(fs.readFileSync(0, "utf8"));
+            console.log(data.tool.join(":"));
+          ')"
+
+          cat << 'EOF' > /tmp/teavm-rt-check/CheckTeaVMRuntime.java
+          import java.io.InputStream;
+          import java.net.URL;
+          import java.security.MessageDigest;
+
+          public class CheckTeaVMRuntime {
+            public static void main(String[] args) throws Exception {
+              String expectedSha = args[0];
+              URL res = CheckTeaVMRuntime.class.getClassLoader().getResource("org/teavm/vm/TeaVM.class");
+              System.out.println("[Verify-TeaVM] Runtime resource URL: " + res);
+              if (res == null) throw new IllegalStateException("org/teavm/vm/TeaVM.class not found on tool classpath");
+              byte[] bytes;
+              try (InputStream in = res.openStream()) {
+                bytes = in.readAllBytes();
+              }
+              MessageDigest md = MessageDigest.getInstance("SHA-256");
+              byte[] digest = md.digest(bytes);
+              StringBuilder sb = new StringBuilder();
+              for (byte b : digest) sb.append(String.format("%02x", b));
+              String actualSha = sb.toString();
+              System.out.println("[Verify-TeaVM] Runtime TeaVM.class SHA-256: " + actualSha);
+              if (!expectedSha.equals(actualSha)) {
+                throw new IllegalStateException("Runtime TeaVM.class SHA-256 mismatch! expected=" + expectedSha + " actual=" + actualSha);
+              }
+              Class<?> cls = Class.forName("org.teavm.vm.TeaVM");
+              System.out.println("[Verify-TeaVM] PASS: Loaded & verified " + cls.getName() + " (" + cls.getDeclaredMethods().length + " methods)");
+            }
+          }
+          EOF
+          javac -d /tmp/teavm-rt-check /tmp/teavm-rt-check/CheckTeaVMRuntime.java
+          java -Xverify:all -cp "/tmp/teavm-rt-check:$TOOL_CP" CheckTeaVMRuntime "$EXPECTED_SHA"
 
       - name: Integrate FlickBridge into Gui.render
         run: |
