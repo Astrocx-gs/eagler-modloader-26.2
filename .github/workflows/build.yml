@@ -328,8 +328,16 @@ jobs:
       - name: Compile :game after FlickBridge integration
         run: |
           set -euo pipefail
+          GUI_FILE="${{ steps.diag_gui.outputs.gui_file }}"
+          grep -q "EquipmentSlot.FEET" "$GUI_FILE"
+          grep -q "\.text(this\.minecraft\.font" "$GUI_FILE"
+          ! grep -q "getInventory()\.armor" "$GUI_FILE"
+          ! grep -q "\.drawString(" "$GUI_FILE"
+          [ "$(grep -c "FlickBridge.dispatchHud" "$GUI_FILE")" -eq 1 ]
           cd workspace
-          ./gradlew :game:compileJava --no-daemon
+          ./gradlew :game:compileJava :game:jar --no-daemon
+          jar tf game/build/libs/*.jar | grep -q "net/minecraft/client/gui/Gui.class"
+          jar tf game/build/libs/*.jar | grep -q "net/flick/bridge/FlickBridge.class"
 
       - name: Build the standalone HTML
         working-directory: workspace
@@ -353,6 +361,7 @@ jobs:
           fi
           node wasm-toolchain/build-single-html.js $FAST --output ../out/eaglercraft-26.2-modded.html
           python3 ../loader/inject-addons.py ../addons ../out/eaglercraft-26.2-modded.html
+          [ -s ../out/eaglercraft-26.2-modded.html ] || { echo "ERROR: final HTML missing or empty"; exit 1; }
           grep -v '^#' ../eml/disabled-injectors.txt > ../out/turned-off-injectors.txt 2>/dev/null || true
 
       - name: Capture TeaVM linker diagnostic on failure
