@@ -276,6 +276,9 @@ jobs:
       - name: Integrate FlickBridge into Gui.render
         run: |
           set -euo pipefail
+          if ! grep -q "teavm-jso" workspace/teavm-compat/build.gradle.kts; then
+            sed -i 's/compileOnly("org.teavm:teavm-core:0.13.0")/compileOnly("org.teavm:teavm-core:0.13.0")\n\tcompileOnly("org.teavm:teavm-jso:0.13.0")/' workspace/teavm-compat/build.gradle.kts
+          fi
           mkdir -p workspace/game/src/main/java/net/flick/bridge
           cp -f loader/teavm-compat/java/net/flick/bridge/FlickBridge.java workspace/game/src/main/java/net/flick/bridge/FlickBridge.java
           GUI_FILE="${{ steps.diag_gui.outputs.gui_file }}"
