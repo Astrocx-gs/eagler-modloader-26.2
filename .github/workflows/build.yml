@@ -299,9 +299,9 @@ jobs:
               "\n        net.flick.bridge.FlickBridge.initRegistry();\n"
               "        if (this.minecraft != null && this.minecraft.player != null) {\n"
               "            StringBuilder _ab = new StringBuilder(\"[\");\n"
-              "            var _arm = this.minecraft.player.getInventory().armor;\n"
-              "            for (int _i = 0; _i < _arm.size(); _i++) {\n"
-              "                var _st = _arm.get(_i);\n"
+              "            net.minecraft.world.entity.EquipmentSlot[] _slots = { net.minecraft.world.entity.EquipmentSlot.FEET, net.minecraft.world.entity.EquipmentSlot.LEGS, net.minecraft.world.entity.EquipmentSlot.CHEST, net.minecraft.world.entity.EquipmentSlot.HEAD };\n"
+              "            for (int _i = 0; _i < _slots.length; _i++) {\n"
+              "                var _st = this.minecraft.player.getItemBySlot(_slots[_i]);\n"
               "                if (_i > 0) _ab.append(',');\n"
               "                _ab.append(\"{\\\"item\\\":\\\"\").append(_st.isEmpty() ? \"\" : String.valueOf(_st.getItem())).append(\"\\\",\\\"durability\\\":\").append(_st.getMaxDamage() - _st.getDamageValue()).append(\",\\\"maxDurability\\\":\").append(Math.max(1, _st.getMaxDamage())).append('}');\n"
               "            }\n"
@@ -314,7 +314,7 @@ jobs:
               "                        int _x = Integer.parseInt(_p[2]), _y = Integer.parseInt(_p[3]);\n"
               "                        int _col = _p.length >= 5 && _p[4].startsWith(\"#\") ? (0xFF000000 | Integer.parseInt(_p[4].substring(1), 16)) : 0xFFFFFFFF;\n"
               "                        String _txt = _p[1].replace(\"\\\\n\", \"\\n\").replace(\"\\\\r\", \"\\r\").replace(\"\\\\|\", \"|\").replace(\"\\\\\\\\\", \"\\\\\");\n"
-              f"                        {gfx}.drawString(this.minecraft.font, _txt, _x, _y, _col);\n"
+              f"                        {gfx}.text(this.minecraft.font, _txt, _x, _y, _col);\n"
               "                    }\n"
               "                }\n"
               "            }\n"
@@ -324,6 +324,12 @@ jobs:
           open(path, "w", encoding="utf-8").write(src)
           print("[FlickBridge] Integrated into", path)
           PY
+
+      - name: Compile :game after FlickBridge integration
+        run: |
+          set -euo pipefail
+          cd workspace
+          ./gradlew :game:compileJava --no-daemon
 
       - name: Build the standalone HTML
         working-directory: workspace
