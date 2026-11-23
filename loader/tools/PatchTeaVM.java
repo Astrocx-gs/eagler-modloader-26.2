@@ -9,28 +9,6 @@ import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
-/**
- * Makes TeaVM's NullCheckInsertion skip methods it can't handle instead of failing the whole build.
- * TeaVM's SSA update trips over some bytecode that mixins produce (e.g. a MixinExtras @Local written
- * back inside a try block) and reports only "Variable used before definition". Such methods are now
- * left without explicit null checks (a null dereference there traps instead of throwing an NPE) and
- * named in the build log.
- * Same for TeaVM.optimizeMethodCacheMiss (the per-method optimizer).
- * And ReferenceResolver: a class, method or field the browser doesn't have (used by a mod) is reported
- * as a warning instead of an error. TeaVM already compiles that spot to throw NoClassDefFoundError /
- * NoSuchMethodError / NoSuchFieldError when it runs, but writes no output at all if any error remains.
- * And TConstructor/TMethod (TeaVM's java.lang.reflect.Constructor/Method): in WebAssembly builds the
- * modifiers TeaVM records for a constructor or method can have the bit newInstance()/invoke() read as
- * "abstract" set for ordinary public ones, so Constructor.newInstance() threw InstantiationException
- * (config libraries such as Cloth Config and YACL create their settings objects this way). The
- * abstract check is dropped; creating an abstract class fails anyway.
- * And TFiles (java.nio.file.Files): createDirectories() of a one-level path that already exists
- * ("config") threw FileAlreadyExistsException; like the JDK it now returns when the directory exists.
- * And TCharset (java.nio.charset.Charset): forName/isSupported accept "UTF8" for UTF-8, as the JDK does
- * (TOML and other config libraries ask for it by that name).
- * Usage: java PatchTeaVM CLASS_FILE... (NullCheckInsertion, TeaVM, ReferenceResolver, TConstructor,
- * TMethod, TFiles, TCharset; patched in place)
- */
 public class PatchTeaVM {
 	static final String CLS = "org/teavm/model/transformation/NullCheckInsertion";
 	static final String DESC = "(Lorg/teavm/model/Program;Lorg/teavm/model/MethodReference;)V";
@@ -45,6 +23,25 @@ public class PatchTeaVM {
 			else if (p.toString().endsWith("TCharset.class")) patchCharsetAlias(p);
 			else patchNullChecks(p);
 		}
+	}
+
+	/**
+	 * True if the class already carries a method with this name and descriptor.
+	 * The two wrapper patches below add a method and rename another; without this
+	 * check a second run wraps the wrapper, leaving several methods with the same
+	 * name and descriptor, which is not valid class file and grows on every run.
+	 */
+	static boolean hasMethod(Path p, String name, String desc) throws Exception {
+		final boolean[] found = { false };
+		new ClassReader(Files.readAllBytes(p)).accept(new ClassVisitor(Opcodes.ASM9) {
+			@Override
+			public MethodVisitor visitMethod(int access, String n, String d, String sig, String[] ex) {
+				if (found[0]) return null;
+				if (n.equals(name) && d.equals(desc)) found[0] = true;
+				return null;
+			}
+		}, 0);
+		return found[0];
 	}
 
 	/** ReferenceResolver.reportError: Diagnostics.error -> Diagnostics.warning. */
@@ -194,11 +191,11 @@ public class PatchTeaVM {
 	static final String TEAVM = "org/teavm/vm/TeaVM";
 	static final String OPT_DESC = "(Lorg/teavm/model/MethodHolder;Lorg/teavm/model/Program;)Lorg/teavm/model/Program;";
 
-	/**
-	 * TeaVM.optimizeMethodCacheMiss(method, program): if TeaVM's optimizer fails on one method, use the
-	 * method unoptimized (and name it in the log) instead of failing the whole build.
-	 */
 	static void patchOptimize(Path p) throws Exception {
+		if (hasMethod(p, "optimizeMethodCacheMiss$orig", OPT_DESC)) {
+			System.out.println("already patched " + p + ": the optimizer already skips (and names) methods it can't handle");
+			return;
+		}
 		ClassReader cr = new ClassReader(Files.readAllBytes(p));
 		ClassWriter cw = new ClassWriter(0);
 		cr.accept(new ClassVisitor(Opcodes.ASM9, cw) {
@@ -215,7 +212,6 @@ public class PatchTeaVM {
 				mv.visitCode();
 				Label start = new Label(), end = new Label(), handler = new Label();
 				mv.visitTryCatchBlock(start, end, handler, "java/lang/Throwable");
-				// keep a copy of the program as it was before optimizing
 				mv.visitVarInsn(Opcodes.ALOAD, 2);
 				mv.visitMethodInsn(Opcodes.INVOKESTATIC, "org/teavm/model/util/ProgramUtils", "copy", "(Lorg/teavm/model/ProgramReader;)Lorg/teavm/model/Program;", false);
 				mv.visitVarInsn(Opcodes.ASTORE, 3);
@@ -255,6 +251,10 @@ public class PatchTeaVM {
 	}
 
 	static void patchNullChecks(Path p) throws Exception {
+		if (hasMethod(p, "transformProgram$orig", DESC)) {
+			System.out.println("already patched " + p + ": NullCheckInsertion already skips (and names) methods it can't handle");
+			return;
+		}
 		ClassReader cr = new ClassReader(Files.readAllBytes(p));
 		ClassWriter cw = new ClassWriter(0);
 		cr.accept(new ClassVisitor(Opcodes.ASM9, cw) {
@@ -266,8 +266,6 @@ public class PatchTeaVM {
 
 			@Override
 			public void visitEnd() {
-				// transformProgram(p, m): try the real pass on a copy first; if TeaVM's own SSA update fails
-				// on it, leave this method without explicit null checks instead of failing the whole build
 				final String PROGRAM = "org/teavm/model/Program", REF = "org/teavm/model/MethodReference";
 				MethodVisitor mv = super.visitMethod(Opcodes.ACC_PUBLIC, "transformProgram", DESC, null, null);
 				mv.visitCode();
