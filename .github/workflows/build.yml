@@ -7,14 +7,19 @@ name: Build Eaglercraft 26.2
 # readable names in crash reports, published as a pre-release. Release builds (push a tag like v1.0, or a manual run with "release"
 # ticked): maximum compression, published as a normal release.
 #
-# TeaVM patch caching (round 7): the *pristine* TeaVM jars are cached, never the patched ones. Every run
-# unpacks a fresh copy of the source jar, patches that copy, and swaps it in atomically, so a cached
-# workspace can never arrive already patched. See the "Prepare pristine TeaVM sources" step.
+# TeaVM patching: the pinned workspace ships unpatched TeaVM jars. Every run copies them to
+# teavm-pristine/, patches a scratch copy, checks the result, and only then installs it into the
+# workspace. The *pristine* jars are cached; a patched jar is never cached or reused.
 
 on:
   push:
     branches: [main]
-    paths: ["mods/**", "loader/**", "addons/**", "!flick-build-worker.js", "!flick-standalone.html", "!*.md", "!docs/**"]
+    paths:
+      - "mods/**"
+      - "loader/**"
+      - "addons/**"
+      - "tools/**"
+      - ".github/workflows/build.yml"
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -27,11 +32,7 @@ on:
         type: boolean
         default: false
       mod_urls:
-        description: "Comma-separated Modrinth/direct JAR URLs to include in mods/"
-        type: string
-        default: ""
-      cache_key:
-        description: "Deterministic SHA-256 combo key for R2 caching"
+        description: "Comma-separated Modrinth/direct JAR URLs to add to mods/ (optional)"
         type: string
         default: ""
 
@@ -46,9 +47,19 @@ env:
   # The Eaglercraft 26.2 workspace is downloaded at build time and never committed here.
   WORKSPACE_REPO: https://github.com/kingjoeishere/Eaglercraft-26.2-Workspace
   WORKSPACE_COMMIT: f73bff91f0f0840bc958c09ab536dbba1e146b2e
-  # The TeaVM jars the patcher edits, and the scratch dir the patching steps share.
-  EML_TEAVM_DIR: wasm-toolchain/teavm-eagler-patch
-  EML_TEAVM_JAR: wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar
+  # The three TeaVM core classes the patcher rewrites.
+  TEAVM_CORE_CLASSES: >-
+    org/teavm/model/transformation/NullCheckInsertion.class
+    org/teavm/vm/TeaVM.class
+    org/teavm/dependency/ReferenceResolver.class
+  # The four TeaVM classlib classes; patched copies go into classlib-override.jar.
+  TEAVM_CLASSLIB_CLASSES: >-
+    org/teavm/classlib/java/lang/reflect/TConstructor.class
+    org/teavm/classlib/java/lang/reflect/TMethod.class
+    org/teavm/classlib/java/nio/file/TFiles.class
+    org/teavm/classlib/java/nio/charset/TCharset.class
+  PATCH_JAR: workspace/wasm-toolchain/teavm-eagler-patch/teavm-core-0.13.1-eagler.jar
+  OVERRIDE_JAR: workspace/wasm-toolchain/teavm-eagler-patch/classlib-override.jar
 
 jobs:
   build:
@@ -57,14 +68,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download requested Fabric JARs
-        if: ${{ inputs.mod_urls != '' }}
-        run: |
-          IFS=',' read -ra URLS <<< "${{ inputs.mod_urls }}"
-          for u in "${URLS[@]}"; do
-            [ -n "$u" ] && curl -fSL --retry 3 -o "mods/$(basename "$u")" "$u"
-          done
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -72,89 +75,92 @@ jobs:
             17
             25
 
-      # Gradle dependency caching is preserved exactly as before.
-      - name: Cache Gradle & Wrapper
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-            workspace/.gradle
-          key: gradle-26.2-${{ env.WORKSPACE_COMMIT }}-${{ hashFiles('loader/**') }}
-          restore-keys: |
-            gradle-26.2-${{ env.WORKSPACE_COMMIT }}-
-
-      # CHANGED: the workspace is no longer cached. It is a shallow git clone (seconds), and every
-      # run used to inherit whatever TeaVM jars the previous run had patched in place. Only the
-      # *pristine* TeaVM jars are cached now, below.
       - name: Download the Eaglercraft 26.2 workspace
         run: |
+          set -euo pipefail
           git init -q workspace
           cd workspace
           git remote add origin "$WORKSPACE_REPO"
           git fetch -q --depth 1 origin "$WORKSPACE_COMMIT"
           git checkout -q FETCH_HEAD
           chmod +x gradlew
-          # Gradle itself is downloaded on first use; retry, since that download sometimes times out
-          for i in 1 2 3 4 5; do ./gradlew --no-daemon --version >/dev/null && break; echo "Gradle download failed (try $i), retrying"; sleep $((i * 20)); done
+          # Gradle itself is downloaded on first use; retry, then fail explicitly
+          ok=0
+          for i in 1 2 3 4 5; do
+            if ./gradlew --no-daemon --version >/dev/null; then ok=1; break; fi
+            echo "Gradle download failed (try $i)"
+            sleep $((i * 20))
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "ERROR: Gradle could not be downloaded after 5 attempts" >&2
+            exit 1
+          fi
+          ./gradlew --no-daemon --version | head -5
 
-      # CHANGED: cache the unmodified TeaVM jars, keyed by the workspace commit, added on the first run.
-      # Keyed per source jar, so bumping TeaVM in the workspace simply misses and refreshes the cache.
-      - name: Cache pristine TeaVM sources
-        id: cache-teavm
+      # Only the unpatched TeaVM jars are cached, keyed by the pinned workspace commit. The workspace
+      # itself is a shallow clone of one commit (seconds) and is never cached, so a run can never
+      # inherit a patched jar from a previous one.
+      - name: Cache pristine TeaVM jars
         uses: actions/cache@v4
         with:
           path: |
             teavm-pristine/teavm-core-0.13.1-eagler.jar
             teavm-pristine/classlib-override.jar
             teavm-pristine/teavm-classlib-0.13.1.jar
-          key: teavm-pristine-${{ env.WORKSPACE_COMMIT }}-${{ hashFiles('workspace/wasm-toolchain/teavm-eagler-patch/*.jar') }}
+          key: teavm-pristine-${{ env.WORKSPACE_COMMIT }}
 
-      # Materialise the pristine copies. `git checkout` above already restored unmodified files into
-      # workspace/, so on a cache miss we simply copy from there; on a hit the cached copies are used.
-      # Either way the jars are verified to load before anything patches them.
-      - name: Prepare pristine TeaVM sources
+      # A cache entry is only trusted after it is compared, byte for byte, with the pinned workspace.
+      - name: Prepare and verify pristine TeaVM jars
         run: |
           set -euo pipefail
-          mkdir -p teavm-pristine eml/deps
+          mkdir -p teavm-pristine
+          WS_DIR="workspace/wasm-toolchain/teavm-eagler-patch"
           for j in teavm-core-0.13.1-eagler.jar classlib-override.jar; do
-            if [ ! -s "teavm-pristine/$j" ]; then
-              cp -f "workspace/$EML_TEAVM_DIR/$j" "teavm-pristine/$j"
+            ws_sha="$(sha256sum "$WS_DIR/$j" | awk '{print $1}')"
+            if [ -s "teavm-pristine/$j" ]; then
+              cache_sha="$(sha256sum "teavm-pristine/$j" | awk '{print $1}')"
+              if [ "$cache_sha" != "$ws_sha" ]; then
+                echo "[pristine] cached $j (${cache_sha:0:16}) does not match the pinned workspace (${ws_sha:0:16}); refreshing"
+                cp -f "$WS_DIR/$j" "teavm-pristine/$j"
+              fi
+            else
+              cp -f "$WS_DIR/$j" "teavm-pristine/$j"
             fi
-            test -s "teavm-pristine/$j"
-            jar tf "teavm-pristine/$j" > /dev/null    # a truncated cache entry fails here, loudly
-            echo "[pristine] $j $(sha256sum "teavm-pristine/$j" | awk '{print $1}')"
+            # a truncated or otherwise wrong cache entry never reaches the patcher: the
+            # checksum comparison above replaces anything that differs from the pinned workspace
+            jar tf "teavm-pristine/$j" > /dev/null
           done
-          echo "[pristine] done; patcher dependencies come from loader/weave.sh below"
-
-      - name: Diagnose workspace Gui.java
-        id: diag_gui
-        run: |
-          set -euo pipefail
-          TARGET="workspace/game/src/main/java/net/minecraft/client/gui/Gui.java"
-          if [ ! -f "$TARGET" ]; then
-            echo "[Diag] ERROR: Expected $TARGET not found"
-            find workspace -name "Gui.java" -print
-            exit 1
+          # the stock classlib the classlib patches are taken from
+          if [ ! -s teavm-pristine/teavm-classlib-0.13.1.jar ]; then
+            curl -fsSL --retry 5 -o teavm-pristine/teavm-classlib-0.13.1.jar \
+              https://repo1.maven.org/maven2/org/teavm/teavm-classlib/0.13.1/teavm-classlib-0.13.1.jar
           fi
-          echo "[Diag] Gradle modules (settings.gradle):"
-          if [ -f workspace/settings.gradle ]; then
-            grep -E "include|project" workspace/settings.gradle
-          else
-            echo "[Diag] no workspace/settings.gradle"
-          fi
-          echo "[Diag] Selected: $TARGET"
-          if markers=$(grep -n "package \|class Gui\|void render(" "$TARGET" | head -n 15); then
-            printf '%s\n' "$markers"
-          else
-            echo "[Diag] no package/class Gui/render( markers in $TARGET"
-          fi
-          echo "gui_file=$TARGET" >> "$GITHUB_OUTPUT"
+          jar tf teavm-pristine/teavm-classlib-0.13.1.jar > /dev/null
+          echo "[pristine] verified:"
+          for j in teavm-pristine/*.jar; do
+            printf '  %-46s %s  %s\n' "$(basename "$j")" "$(sha256sum "$j" | cut -c1-16)" "$(stat -c%s "$j") bytes"
+          done
 
       - name: Download the mods listed in mods/modrinth.txt
+        env:
+          MOD_URLS: ${{ inputs.mod_urls }}
         run: |
+          set -euo pipefail
           if [ -f mods/modrinth.txt ]; then python3 tools/modrinth.py download 26.2 mods/modrinth.txt mods; fi
-          ls mods
+          # user-supplied extra jars; MOD_URLS arrives through the environment, never spliced into shell source
+          if [ -n "${MOD_URLS:-}" ]; then
+            IFS=',' read -r -a urls <<< "$MOD_URLS"
+            for u in "${urls[@]}"; do
+              u="${u#"${u%%[![:space:]]*}"}"
+              [ -z "$u" ] && continue
+              case "$u" in https://*) ;; *) echo "ERROR: not an https URL: $u" >&2; exit 1 ;; esac
+              name="${u##*/}"
+              case "$name" in *.jar) ;; *) echo "ERROR: URL does not end in .jar: $u" >&2; exit 1 ;; esac
+              echo "fetching $u"
+              curl -fSL --retry 3 -o "mods/$name" "$u"
+            done
+          fi
+          ls -la mods
 
       # Quick checks first, so a mod that can't work stops the build in minutes instead of after the
       # long browser compile.
@@ -171,19 +177,6 @@ jobs:
         working-directory: workspace
         run: ./gradlew --no-daemon --console=plain :game:compileJava
 
-      - name: Print eml/weave.log on failure
-        if: failure()
-        run: |
-          if [ -f eml/weave.log ]; then
-            echo "=== eml/weave.log ==="
-            cat eml/weave.log
-          elif [ -f ../eml/weave.log ]; then
-            echo "=== ../eml/weave.log ==="
-            cat ../eml/weave.log
-          else
-            echo "eml/weave.log not found"
-          fi
-
       - name: Explain a failed mod check
         if: failure()
         run: |
@@ -198,16 +191,16 @@ jobs:
 
       - name: Free disk space and add swap
         run: |
-          # best-effort housekeeping on the runner, but reported either way rather than silenced
           if sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL; then
             echo "[disk] removed unused toolchains"
           else
-            echo "[disk] nothing to remove (non-fatal)"
+            echo "[disk] nothing to remove (non-fatal housekeeping)"
           fi
-          if sudo fallocate -l 8G /swapfile2 && sudo chmod 600 /swapfile2 && sudo mkswap /swapfile2 && sudo swapon /swapfile2; then
+          if sudo fallocate -l 8G /swapfile2 && sudo chmod 600 /swapfile2 &&
+             sudo mkswap /swapfile2 && sudo swapon /swapfile2; then
             echo "[disk] 8G swap enabled"
           else
-            echo "[disk] swap not added (non-fatal)"
+            echo "[disk] swap not added (non-fatal housekeeping)"
           fi
           free -h; df -h /
 
@@ -240,311 +233,195 @@ jobs:
           ./gradlew --no-daemon --console=plain -I ../eml/epk.init.gradle :target_lwjgl_desktop:emlPack_sounds :target_lwjgl_desktop:emlPack_music
           ls -la target_teavm/build/web/
 
-      # CHANGED: was a javac + java against a scratch /tmp dir with no eml/deps, so it could only ever
-      # report "DEPS is empty" or "FileNotFound". It now unpacks the jar into a scratch dir and drives
-      # the patcher the way the real step does, on *copies*, with the patcher's exit code as the verdict.
-      - name: Verify PatchTeaVM idempotency on ReferenceResolver
-        env:
-          EML_DEPS: ${{ github.workspace }}/eml/deps
-        run: |
-          set -euo pipefail
-          if ! ls "$EML_DEPS"/*.jar >/dev/null 2>&1; then
-            echo "ERROR: $EML_DEPS is empty, so PatchTeaVM.java cannot be compiled."
-            echo "       loader/weave.sh is supposed to populate it; check eml/weave.log."
-            if [ -f loader/fetch-deps.py ]; then
-              echo "[deps] falling back to loader/fetch-deps.py"
-              python3 loader/fetch-deps.py eml/deps
-            fi
-            ls "$EML_DEPS"/*.jar >/dev/null 2>&1 || { echo "ERROR: still no jars in $EML_DEPS"; exit 1; }
-          fi
-          DEPS="$(ls "$EML_DEPS"/*.jar | tr '\n' ':')"
-          JAR="$GITHUB_WORKSPACE/teavm-pristine/teavm-core-0.13.1-eagler.jar"
-          test -s "$JAR"
-          WORK="$RUNNER_TEMP/patch-idempotency"
-          rm -rf "$WORK"; mkdir -p "$WORK/classes" "$WORK/x"; cd "$WORK"
-          javac -nowarn -cp "$DEPS" -d classes "$GITHUB_WORKSPACE/loader/tools/PatchTeaVM.java"
-
-          # work from a copy: the cached pristine jar must never be mutated by a test
-          cp -f "$JAR" RR.jar
-          (cd x && unzip -o -q ../RR.jar org/teavm/dependency/ReferenceResolver.class)
-
-          echo "=== Before Run 1 (javap reportError) ==="
-          javap -p -c x/org/teavm/dependency/ReferenceResolver.class | grep -A 25 "reportError"
-          echo "=== Run 1 (unpatched -> patched) ==="
-          java -cp "$DEPS:classes" PatchTeaVM x/org/teavm/dependency/ReferenceResolver.class
-          echo "=== After Run 1 (verify Diagnostics.warning) ==="
-          javap -p -c x/org/teavm/dependency/ReferenceResolver.class | grep -A 25 "reportError" | grep -F "org/teavm/diagnostics/Diagnostics.warning"
-          cp x/org/teavm/dependency/ReferenceResolver.class ReferenceResolver.class.after1
-
-          echo "=== Run 2 (already patched -> must be a no-op) ==="
-          java -cp "$DEPS:classes" PatchTeaVM x/org/teavm/dependency/ReferenceResolver.class
-          cmp x/org/teavm/dependency/ReferenceResolver.class ReferenceResolver.class.after1
-          echo "[PatchTeaVM] idempotency, Diagnostics.warning and byte-identity verified."
-
-      # CHANGED: single ownership of patching. This step writes only to fresh copies in a scratch dir,
-      # then swaps the finished jars in. Previously this step edited the workspace jars in place with
-      # `jar uf` + `mv`, which is what made a cached workspace arrive already patched.
+      # ---------------------------------------------------------------- patching
+      # Uses the pristine copies only. Classes are extracted, patched and re-inserted from the same
+      # directory, and every path is passed as its own argument.
       - name: Patch TeaVM for mods (null checks, missing classes, reflection, Files.createDirectories, UTF8)
-        env:
-          EML_DEPS: ${{ github.workspace }}/eml/deps
         run: |
           set -euo pipefail
-          if ! ls "$EML_DEPS"/*.jar >/dev/null 2>&1; then
-            echo "ERROR: $EML_DEPS is empty, so PatchTeaVM.java cannot be compiled."
-            echo "       loader/weave.sh is supposed to populate it; check eml/weave.log."
-            exit 1
-          fi
-          DEPS="$(ls "$EML_DEPS"/*.jar | tr '\n' ':')"
-          PRISTINE="$GITHUB_WORKSPACE/teavm-pristine"
-          JARDIR="$GITHUB_WORKSPACE/workspace/$EML_TEAVM_DIR"
           WORK="$RUNNER_TEMP/patch-teavm"
-          rm -rf "$WORK"; mkdir -p "$WORK/classes" "$WORK/x"; cd "$WORK"
+          rm -rf "$WORK"; mkdir -p "$WORK/classes" "$WORK/x"
+          DEPS="$(ls "$PWD"/eml/deps/*.jar | tr '\n' ':')"
+          [ -n "$DEPS" ] || { echo "ERROR: eml/deps is empty; loader/weave.sh did not populate it" >&2; exit 1; }
 
-          # --- 1. the patcher itself
-          javac -nowarn -cp "$DEPS" -d classes "$GITHUB_WORKSPACE/loader/tools/PatchTeaVM.java"
+          # 1. the patcher itself
+          javac -nowarn -cp "$DEPS" -d "$WORK/classes" loader/tools/PatchTeaVM.java
 
-          # --- 2. patch a COPY of the pristine core jar
-          cp -f "$PRISTINE/teavm-core-0.13.1-eagler.jar" core.jar
-          CLS="org/teavm/model/transformation/NullCheckInsertion.class org/teavm/vm/TeaVM.class org/teavm/dependency/ReferenceResolver.class"
-          (cd x && unzip -o -q ../core.jar $CLS)
-          java -cp "$DEPS:classes" PatchTeaVM $CLS
-          jar uf core.jar $CLS
-          # fail here, not three steps later: exactly one entry each, wrapper present
-          jar tf core.jar > list.txt
-          for c in $CLS; do
-            [ "$(grep -c -E "^${c//\//\\/}\$" list.txt)" -eq 1 ] || {
-              echo "ERROR: expected exactly one $c in core.jar"; grep -F "${c%.class}" list.txt; exit 1; }
+          read -r -a CORE <<< "$TEAVM_CORE_CLASSES"
+          read -r -a CLS <<< "$TEAVM_CLASSLIB_CLASSES"
+
+          # 2. core jar: extract -> patch -> re-insert, all relative to $WORK/x
+          cp -f teavm-pristine/teavm-core-0.13.1-eagler.jar "$WORK/core.jar"
+          unzip -o -q "$WORK/core.jar" "${CORE[@]}" -d "$WORK/x"
+          ( cd "$WORK" && java -cp "$DEPS:$WORK/classes" PatchTeaVM "${CORE[@]/#/x/}" )
+          # jar -C applies to the next entry only, so insert from inside the extraction directory
+          ( cd "$WORK/x" && jar uf "$WORK/core.jar" "${CORE[@]}" )
+
+          # 3. classlib: same, into a copy of the override jar
+          cp -f teavm-pristine/classlib-override.jar "$WORK/override.jar"
+          unzip -o -q teavm-pristine/teavm-classlib-0.13.1.jar "${CLS[@]}" -d "$WORK/x"
+          ( cd "$WORK" && java -cp "$DEPS:$WORK/classes" PatchTeaVM "${CLS[@]/#/x/}" )
+          ( cd "$WORK/x" && jar uf "$WORK/override.jar" "${CLS[@]}" )
+
+          # 4. every expected class exactly once, wrapper methods present exactly once
+          jar tf "$WORK/core.jar" > "$WORK/core.list"
+          jar tf "$WORK/override.jar" > "$WORK/override.list"
+          for c in "${CORE[@]}"; do
+            n="$(grep -c -F -x "$c" "$WORK/core.list")"
+            [ "$n" -eq 1 ] || { echo "ERROR: $c appears $n times in the patched core jar (want 1)" >&2; exit 1; }
           done
-          [ "$(javap -cp core.jar -p -s org.teavm.vm.TeaVM | grep -c 'optimizeMethodCacheMiss\$orig(')" -eq 1 ]
-          [ "$(javap -cp core.jar -p -s org.teavm.vm.TeaVM | grep -c 'optimizeMethodCacheMiss(')" -eq 1 ]
-          [ "$(javap -cp core.jar -p -s org.teavm.model.transformation.NullCheckInsertion | grep -c 'transformProgram\$orig(')" -eq 1 ]
-          [ "$(javap -cp core.jar -p -s org.teavm.model.transformation.NullCheckInsertion | grep -c 'transformProgram(')" -eq 1 ]
-          javap -cp core.jar -p -c org.teavm.dependency.ReferenceResolver | grep -q 'org/teavm/diagnostics/Diagnostics.warning'
-
-          # --- 3. TeaVM's classlib (reflection, Files, Charset)
-          curl -fsSL --retry 5 -o teavm-classlib.jar https://repo1.maven.org/maven2/org/teavm/teavm-classlib/0.13.1/teavm-classlib-0.13.1.jar
-          CL="org/teavm/classlib/java/lang/reflect/TConstructor.class org/teavm/classlib/java/lang/reflect/TMethod.class org/teavm/classlib/java/nio/file/TFiles.class org/teavm/classlib/java/nio/charset/TCharset.class"
-          (cd x && unzip -o -q ../teavm-classlib.jar $CL)
-          java -cp "$DEPS:classes" PatchTeaVM $CL
-
-          # --- 4. build the override jar from the pristine one plus the patched entries
-          cp -f "$PRISTINE/classlib-override.jar" override.jar
-          jar uf override.jar $CL
-          if [ -f "$GITHUB_WORKSPACE/loader/teavm-compat/java/java/security/DigestInputStream.java" ]; then
-            javac -nowarn --patch-module java.base="$GITHUB_WORKSPACE/loader/teavm-compat/java" -d classes \
-              "$GITHUB_WORKSPACE/loader/teavm-compat/java/java/security/DigestInputStream.java"
-            jar uf override.jar -C classes java/security/DigestInputStream.class
-            echo "[patch-teavm] DigestInputStream.class added to classlib-override.jar"
-          fi
-
-          # --- 5. publish atomically into the workspace, after the private verification below
-          echo "core.jar $(sha256sum core.jar | awk '{print $1}')" > "$WORK/SHA256SUMS"
-          echo "override.jar $(sha256sum override.jar | awk '{print $1}')" >> "$WORK/SHA256SUMS"
-
-          # the runtime check needs the tool classpath, so it happens in its own step; copy the
-          # finished jars there and let that step do the swap.
-          mkdir -p "$GITHUB_WORKSPACE/eml/patched"
-          cp -f core.jar override.jar "$WORK/SHA256SUMS" "$GITHUB_WORKSPACE/eml/patched/"
-          echo "[patch-teavm] staged in eml/patched; the verify step installs them."
-
-      - name: Pre-link sanity check
-        run: |
-          set -uo pipefail
-          echo "[Pre-link] Starting sanity checks..."
-          FAIL=0
-          for f in \
-            "workspace/wasm-toolchain/build-single-html.js" \
-            "eml/patched/teavm-core-0.13.1-eagler.jar" \
-            "eml/patched/classlib-override.jar"; do
-            if [ -f "$f" ]; then
-              echo "[Pre-link] PASS: $f exists"
-            else
-              echo "[Pre-link] FAIL: missing $f"
-              FAIL=1
-            fi
+          for c in "${CLS[@]}"; do
+            n="$(grep -c -F -x "$c" "$WORK/override.list")"
+            [ "$n" -eq 1 ] || { echo "ERROR: $c appears $n times in classlib-override.jar (want 1)" >&2; exit 1; }
           done
-          if [ -f loader/teavm-compat/java/java/security/DigestInputStream.java ]; then
-            if jar tf eml/patched/classlib-override.jar | grep -F -x "java/security/DigestInputStream.class" >/dev/null; then
-              echo "[Pre-link] PASS: DigestInputStream.class in classlib-override.jar"
-            else
-              echo "[Pre-link] FAIL: DigestInputStream.class missing from classlib-override.jar"
-              FAIL=1
-            fi
-          fi
-          if [ "$FAIL" -ne 0 ]; then
-            echo "[Pre-link] FAILED."
-            exit 1
-          fi
-          echo "[Pre-link] COMPLETED: All checks passed."
+          [ "$(javap -cp "$WORK/core.jar" -p -s org.teavm.vm.TeaVM | grep -c 'optimizeMethodCacheMiss\$orig(')" -eq 1 ]
+          [ "$(javap -cp "$WORK/core.jar" -p -s org.teavm.vm.TeaVM | grep -c 'optimizeMethodCacheMiss(')" -eq 1 ]
+          [ "$(javap -cp "$WORK/core.jar" -p -s org.teavm.model.transformation.NullCheckInsertion | grep -c 'transformProgram\$orig(')" -eq 1 ]
+          [ "$(javap -cp "$WORK/core.jar" -p -s org.teavm.model.transformation.NullCheckInsertion | grep -c 'transformProgram(')" -eq 1 ]
+          javap -cp "$WORK/core.jar" -p -c org.teavm.dependency.ReferenceResolver | grep -q 'org/teavm/diagnostics/Diagnostics.warning'
+          javap -cp "$WORK/override.jar" -p -s org.teavm.classlib.java.nio.charset.TCharset | grep -q 'forName'
 
-      # CHANGED: verifies the staged jars, then installs them into the workspace. The runtime classpath
-      # check runs BEFORE the swap, so a jar that fails verification never reaches the build.
-      - name: Verify patched TeaVM JAR and runtime classpath
-        env:
-          PUBLISH: "1"
+          # 5. stage for the verification step; nothing is installed yet
+          mkdir -p eml/patched
+          cp -f "$WORK/core.jar" eml/patched/teavm-core-0.13.1-eagler.jar
+          cp -f "$WORK/override.jar" eml/patched/classlib-override.jar
+          echo "[patch-teavm] staged in eml/patched"
+
+      # The patcher must be a no-op on its own output: two passes over all three core classes, then
+      # every class must be byte-identical. A patcher that re-wraps adds duplicate methods and the
+      # resulting class is not loadable.
+      - name: PatchTeaVM is idempotent on all three core classes
         run: |
           set -euo pipefail
-          JAR="$GITHUB_WORKSPACE/eml/patched/teavm-core-0.13.1-eagler.jar"
-          test -s "$JAR"
-          test -s "$GITHUB_WORKSPACE/eml/patched/classlib-override.jar"
-          ZIP_COUNT="$(jar tf "$JAR" | grep -c '^org/teavm/vm/TeaVM\.class$')"
-          if [ "$ZIP_COUNT" -ne 1 ]; then
-            echo "[Verify-TeaVM] FAIL: expected 1 ZIP entry for org/teavm/vm/TeaVM.class, found $ZIP_COUNT"
+          WORK="$RUNNER_TEMP/patch-idem"
+          rm -rf "$WORK"; mkdir -p "$WORK/classes" "$WORK/x"
+          DEPS="$(ls "$PWD"/eml/deps/*.jar | tr '\n' ':')"
+          javac -nowarn -cp "$DEPS" -d "$WORK/classes" loader/tools/PatchTeaVM.java
+          read -r -a CORE <<< "$TEAVM_CORE_CLASSES"
+
+          # a pristine copy, so this step tests the patcher and not the staged output
+          cp -f teavm-pristine/teavm-core-0.13.1-eagler.jar "$WORK/core.jar"
+          unzip -o -q "$WORK/core.jar" "${CORE[@]}" -d "$WORK/x"
+          mkdir -p "$WORK/pass1" "$WORK/pass2"
+
+          echo "=== pass 1 (pristine -> patched) ==="
+          ( cd "$WORK/x" && java -cp "$DEPS:$WORK/classes" PatchTeaVM "${CORE[@]}" )
+          for c in "${CORE[@]}"; do
+            mkdir -p "$WORK/pass1/$(dirname "$c")"
+            cp "$WORK/x/$c" "$WORK/pass1/$c"
+          done
+
+          echo "=== pass 2 (already patched -> must be a no-op) ==="
+          ( cd "$WORK/x" && java -cp "$DEPS:$WORK/classes" PatchTeaVM "${CORE[@]}" )
+          for c in "${CORE[@]}"; do
+            mkdir -p "$WORK/pass2/$(dirname "$c")"
+            cp "$WORK/x/$c" "$WORK/pass2/$c"
+          done
+
+          for c in "${CORE[@]}"; do
+            if cmp -s "$WORK/pass1/$c" "$WORK/pass2/$c"; then
+              echo "[idem] $c unchanged by the second pass"
+            else
+              echo "ERROR: $c changed on the second patch pass; PatchTeaVM is not idempotent" >&2
+              exit 1
+            fi
+          done
+          # and no duplicated wrapper methods crept in
+          [ "$(javap -cp "$WORK/x" -p -s org.teavm.vm.TeaVM | grep -c 'optimizeMethodCacheMiss\$orig(')" -eq 1 ]
+          [ "$(javap -cp "$WORK/x" -p -s org.teavm.model.transformation.NullCheckInsertion | grep -c 'transformProgram\$orig(')" -eq 1 ]
+
+      # Installs the staged jars, then proves the class TeaVM will actually load is the patched one.
+      - name: Verify patched TeaVM JAR, install it, and check the runtime classpath
+        run: |
+          set -euo pipefail
+          STAGED_CORE="eml/patched/teavm-core-0.13.1-eagler.jar"
+          STAGED_OVER="eml/patched/classlib-override.jar"
+          test -s "$STAGED_CORE"; test -s "$STAGED_OVER"
+
+          # entry hashes of the staged jar, taken before anything is installed
+          unzip -p "$STAGED_CORE" org/teavm/vm/TeaVM.class > "$RUNNER_TEMP/staged-TeaVM.class"
+          EXPECTED_SHA="$(sha256sum "$RUNNER_TEMP/staged-TeaVM.class" | awk '{print $1}')"
+          echo "[verify] staged TeaVM.class sha256: $EXPECTED_SHA"
+
+          # atomic install
+          cp -f "$STAGED_CORE" "$PATCH_JAR.new"
+          cp -f "$STAGED_OVER" "$OVERRIDE_JAR.new"
+          mv -f "$PATCH_JAR.new" "$PATCH_JAR"
+          mv -f "$OVERRIDE_JAR.new" "$OVERRIDE_JAR"
+          echo "[verify] installed patched jars into workspace/wasm-toolchain/teavm-eagler-patch/"
+          sha256sum "$PATCH_JAR" "$OVERRIDE_JAR"
+
+          # the tool classpath, from the workspace's own task. It prints one line prefixed with
+          # EAGLER_STANDALONE_CLASSPATHS= whose value is JSON, so the prefix has to be stripped.
+          RAW="$(cd workspace && ./gradlew --no-daemon -q :target_teavm_wasm_gc:printStandaloneClasspaths)"
+          JSON="$(printf '%s\n' "$RAW" | sed -n 's/^EAGLER_STANDALONE_CLASSPATHS=//p')"
+          if [ -z "$JSON" ]; then
+            echo "ERROR: :target_teavm_wasm_gc:printStandaloneClasspaths printed no EAGLER_STANDALONE_CLASSPATHS line" >&2
+            printf '%s\n' "$RAW" >&2
             exit 1
           fi
-          echo "[Verify-TeaVM] PASS: 1 ZIP entry for org/teavm/vm/TeaVM.class"
-
-          ORIG_COUNT="$(javap -cp "$JAR" -p -s org.teavm.vm.TeaVM | awk '/optimizeMethodCacheMiss\$orig\(/{n++} END{print n+0}')"
-          WRAP_COUNT="$(javap -cp "$JAR" -p -s org.teavm.vm.TeaVM | awk '/optimizeMethodCacheMiss\(/{n++} END{print n+0}')"
-          if [ "$ORIG_COUNT" -ne 1 ] || [ "$WRAP_COUNT" -ne 1 ]; then
-            echo "[Verify-TeaVM] FAIL: expected optimizeMethodCacheMiss\$orig=1 and =1, got orig=$ORIG_COUNT wrap=$WRAP_COUNT"
-            exit 1
-          fi
-          echo "[Verify-TeaVM] PASS: optimizeMethodCacheMiss=1, optimizeMethodCacheMiss\$orig=1"
-
-          mkdir -p "$RUNNER_TEMP/teavm-rt-check"
-          unzip -p "$JAR" org/teavm/vm/TeaVM.class > "$RUNNER_TEMP/teavm-rt-check/expected-TeaVM.class"
-          EXPECTED_SHA="$(sha256sum "$RUNNER_TEMP/teavm-rt-check/expected-TeaVM.class" | awk '{print $1}')"
-          echo "[Verify-TeaVM] Expected TeaVM.class SHA-256: $EXPECTED_SHA"
-
-          TOOL_CP="$(cd workspace && ./gradlew --no-daemon -q :target_teavm_wasm_gc:printStandaloneClasspaths | node -e '
-            const fs = require("fs");
-            const data = JSON.parse(fs.readFileSync(0, "utf8"));
-            console.log(data.tool.join(":"));
+          TOOL_CP="$(printf '%s' "$JSON" | node -e '
+            const d = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            process.stdout.write(d.tool.join(":"));
           ')"
+          echo "[verify] tool classpath entries: $(printf '%s' "$TOOL_CP" | tr ':' '\n' | wc -l)"
 
-          cat << 'EOF' > "$RUNNER_TEMP/teavm-rt-check/CheckTeaVMRuntime.java"
+          mkdir -p "$RUNNER_TEMP/rt"
+          cat > "$RUNNER_TEMP/rt/CheckTeaVMRuntime.java" <<'EOFJ'
           import java.io.InputStream;
           import java.net.URL;
+          import java.net.URLDecoder;
+          import java.nio.charset.StandardCharsets;
+          import java.nio.file.Path;
           import java.security.MessageDigest;
 
           public class CheckTeaVMRuntime {
             public static void main(String[] args) throws Exception {
               String expectedSha = args[0];
+              String patchedJar = args[1];
               URL res = CheckTeaVMRuntime.class.getClassLoader().getResource("org/teavm/vm/TeaVM.class");
-              System.out.println("[Verify-TeaVM] Runtime resource URL: " + res);
-              if (res == null) throw new IllegalStateException("org/teavm/vm/TeaVM.class not found on tool classpath");
+              System.out.println("[verify] runtime resource: " + res);
+              if (res == null) throw new IllegalStateException("org/teavm/vm/TeaVM.class not on the tool classpath");
+              // the resource is a jar:file:/...!/ URL: canonicalise both sides so symlinks and
+              // /private/var-style prefixes cannot produce a false mismatch
+              String from = URLDecoder.decode(res.toString(), StandardCharsets.UTF_8);
+              String jarPath = from;
+              if (jarPath.startsWith("jar:")) jarPath = jarPath.substring(4);
+              if (jarPath.startsWith("file:")) jarPath = jarPath.substring(5);
+              int bang = jarPath.indexOf("!/");
+              if (bang >= 0) jarPath = jarPath.substring(0, bang);
+              String fromCanon = new java.io.File(jarPath).getCanonicalPath();
+              String patchedCanon = new java.io.File(patchedJar).getCanonicalPath();
+              if (!fromCanon.equals(patchedCanon))
+                throw new IllegalStateException("TeaVM.class is loaded from " + fromCanon + ", not the patched jar " + patchedCanon);
+              System.out.println("[verify] loaded from the patched jar: " + fromCanon);
               byte[] bytes;
-              try (InputStream in = res.openStream()) {
-                bytes = in.readAllBytes();
-              }
-              MessageDigest md = MessageDigest.getInstance("SHA-256");
-              byte[] digest = md.digest(bytes);
+              try (InputStream in = res.openStream()) { bytes = in.readAllBytes(); }
               StringBuilder sb = new StringBuilder();
-              for (byte b : digest) sb.append(String.format("%02x", b));
-              String actualSha = sb.toString();
-              System.out.println("[Verify-TeaVM] Runtime TeaVM.class SHA-256: " + actualSha);
-              if (!expectedSha.equals(actualSha)) {
-                throw new IllegalStateException("Runtime TeaVM.class SHA-256 mismatch! expected=" + expectedSha + " actual=" + actualSha);
-              }
-              Class<?> cls = Class.forName("org.teavm.vm.TeaVM");
-              System.out.println("[Verify-TeaVM] PASS: Loaded & verified " + cls.getName() + " (" + cls.getDeclaredMethods().length + " methods)");
+              for (byte b : MessageDigest.getInstance("SHA-256").digest(bytes)) sb.append(String.format("%02x", b));
+              String actual = sb.toString();
+              System.out.println("[verify] runtime TeaVM.class sha256: " + actual);
+              if (!expectedSha.equals(actual))
+                throw new IllegalStateException("sha256 mismatch: expected " + expectedSha + " actual " + actual);
+              Class<?> c = Class.forName("org.teavm.vm.TeaVM");
+              System.out.println("[verify] OK " + c.getName() + " (" + c.getDeclaredMethods().length + " methods)");
             }
           }
-          EOF
-          javac -d "$RUNNER_TEMP/teavm-rt-check" "$RUNNER_TEMP/teavm-rt-check/CheckTeaVMRuntime.java"
-          java -Xverify:all -cp "$RUNNER_TEMP/teavm-rt-check:$TOOL_CP" CheckTeaVMRuntime "$EXPECTED_SHA"
+          EOFJ
+          javac -d "$RUNNER_TEMP/rt" "$RUNNER_TEMP/rt/CheckTeaVMRuntime.java"
+          # the patched jar first, so it wins over any stock teavm-core on the tool classpath
+          java -Xverify:all -cp "$PWD/$PATCH_JAR:$TOOL_CP:$RUNNER_TEMP/rt" \
+            CheckTeaVMRuntime "$EXPECTED_SHA" "$PWD/$PATCH_JAR"
 
-          # install only after every check above passed, and atomically, so an interrupted run can
-          # never leave a half-written jar in the workspace
-          DEST="$GITHUB_WORKSPACE/workspace/$EML_TEAVM_DIR"
-          cp -f "$JAR" "$DEST/teavm-core-0.13.1-eagler.jar.new"
-          cp -f "$GITHUB_WORKSPACE/eml/patched/classlib-override.jar" "$DEST/classlib-override.jar.new"
-          mv -f "$DEST/teavm-core-0.13.1-eagler.jar.new" "$DEST/teavm-core-0.13.1-eagler.jar"
-          mv -f "$DEST/classlib-override.jar.new" "$DEST/classlib-override.jar"
-          echo "[Verify-TeaVM] installed patched jars into $DEST"
-          sha256sum "$DEST/teavm-core-0.13.1-eagler.jar" "$DEST/classlib-override.jar"
-
-      # Same contract as the original: it must patch an already-patched class as a no-op. Run last,
-      # against the installed jars, so it cannot be mistaken for the thing that patches them.
-      - name: Assert PatchTeaVM is idempotent on the installed jars
-        env:
-          EML_DEPS: ${{ github.workspace }}/eml/deps
+      - name: Pre-link sanity check
         run: |
           set -euo pipefail
-          ls "$EML_DEPS"/*.jar >/dev/null 2>&1 || { echo "ERROR: $EML_DEPS is empty"; exit 1; }
-          DEPS="$(ls "$EML_DEPS"/*.jar | tr '\n' ':')"
-          WORK="$RUNNER_TEMP/patch-idem-installed"; rm -rf "$WORK"; mkdir -p "$WORK/classes" "$WORK/x"; cd "$WORK"
-          javac -nowarn -cp "$DEPS" -d classes "$GITHUB_WORKSPACE/loader/tools/PatchTeaVM.java"
-          (cd x && unzip -o -q "$GITHUB_WORKSPACE/workspace/$EML_TEAVM_JAR" \
-            org/teavm/dependency/ReferenceResolver.class org/teavm/vm/TeaVM.class \
-            org/teavm/model/transformation/NullCheckInsertion.class)
-          cp x/org/teavm/dependency/ReferenceResolver.class before.class
-          java -cp "$DEPS:classes" PatchTeaVM \
-            x/org/teavm/dependency/ReferenceResolver.class \
-            x/org/teavm/vm/TeaVM.class \
-            x/org/teavm/model/transformation/NullCheckInsertion.class
-          cmp x/org/teavm/dependency/ReferenceResolver.class before.class
-          echo "[PatchTeaVM] re-patching the installed jars changed nothing."
-
-      - name: Integrate FlickBridge into Gui.render
-        run: |
-          set -euo pipefail
-          if ! grep -q "teavm-jso" workspace/teavm-compat/build.gradle.kts; then
-            sed -i 's/compileOnly("org.teavm:teavm-core:0.13.0")/compileOnly("org.teavm:teavm-core:0.13.0")\n\tcompileOnly("org.teavm:teavm-jso:0.13.0")/' workspace/teavm-compat/build.gradle.kts
-          fi
-          mkdir -p workspace/game/src/main/java/net/flick/bridge
-          cp -f loader/teavm-compat/java/net/flick/bridge/FlickBridge.java workspace/game/src/main/java/net/flick/bridge/FlickBridge.java
-          GUI_FILE="${{ steps.diag_gui.outputs.gui_file }}"
-          if [ -z "$GUI_FILE" ] || [ ! -f "$GUI_FILE" ]; then
-            echo "[FlickBridge] ERROR: Validated Gui.java not found at: $GUI_FILE"
-            exit 1
-          fi
-          python3 - "$GUI_FILE" << 'PY'
-          import sys, re
-          path = sys.argv[1]
-          src = open(path, "r", encoding="utf-8").read()
-          if "FlickBridge.dispatchHud" in src:
-              print("[FlickBridge] Already integrated in", path)
-              sys.exit(0)
-          m = re.search(r"(this\.hud\.extractRenderState\((\w+),\s*\w+\);)", src)
-          if not m:
-              print("[FlickBridge] ERROR: this.hud.extractRenderState(...) not found in", path)
-              sys.exit(1)
-          gfx = m.group(2)
-          hook = (
-              "\n        net.flick.bridge.FlickBridge.initRegistry();\n"
-              "        if (this.minecraft != null && this.minecraft.player != null) {\n"
-              "            StringBuilder _ab = new StringBuilder(\"[\");\n"
-              "            net.minecraft.world.entity.EquipmentSlot[] _slots = { net.minecraft.world.entity.EquipmentSlot.FEET, net.minecraft.world.entity.EquipmentSlot.LEGS, net.minecraft.world.entity.EquipmentSlot.CHEST, net.minecraft.world.entity.EquipmentSlot.HEAD };\n"
-              "            for (int _i = 0; _i < _slots.length; _i++) {\n"
-              "                var _st = this.minecraft.player.getItemBySlot(_slots[_i]);\n"
-              "                if (_i > 0) _ab.append(',');\n"
-              "                _ab.append(\"{\\\"item\\\":\\\"\").append(_st.isEmpty() ? \"\" : String.valueOf(_st.getItem())).append(\"\\\",\\\"durability\\\":\").append(_st.getMaxDamage() - _st.getDamageValue()).append(\",\\\"maxDurability\\\":\").append(Math.max(1, _st.getMaxDamage())).append('}');\n"
-              "            }\n"
-              "            _ab.append(']');\n"
-              "            String _cmds = net.flick.bridge.FlickBridge.dispatchHud(_ab.toString());\n"
-              "            if (_cmds != null && !_cmds.isEmpty()) {\n"
-              "                for (String _line : _cmds.split(\"\\n\")) {\n"
-              "                    String[] _p = _line.split(\"(?<!\\\\\\\\)\\\\|\", -1);\n"
-              "                    if (_p.length >= 4 && \"T\".equals(_p[0])) {\n"
-              "                        int _x = Integer.parseInt(_p[2]), _y = Integer.parseInt(_p[3]);\n"
-              "                        int _col = _p.length >= 5 && _p[4].startsWith(\"#\") ? (0xFF000000 | Integer.parseInt(_p[4].substring(1), 16)) : 0xFFFFFFFF;\n"
-              "                        String _txt = _p[1].replace(\"\\\\n\", \"\\n\").replace(\"\\\\r\", \"\\r\").replace(\"\\\\|\", \"|\").replace(\"\\\\\\\\\", \"\\\\\");\n"
-              f"                        {gfx}.text(this.minecraft.font, _txt, _x, _y, _col);\n"
-              "                    }\n"
-              "                }\n"
-              "            }\n"
-              "        }\n"
-          )
-          src = src[:m.end()] + hook + src[m.end():]
-          open(path, "w", encoding="utf-8").write(src)
-          print("[FlickBridge] Integrated into", path)
-          PY
-
-      - name: Compile :game after FlickBridge integration
-        run: |
-          set -euo pipefail
-          GUI_FILE="${{ steps.diag_gui.outputs.gui_file }}"
-          grep -q "EquipmentSlot.FEET" "$GUI_FILE"
-          grep -q "\.text(this\.minecraft\.font" "$GUI_FILE"
-          ! grep -q "getInventory()\.armor" "$GUI_FILE"
-          ! grep -q "\.drawString(" "$GUI_FILE"
-          [ "$(grep -c "FlickBridge.dispatchHud" "$GUI_FILE")" -eq 1 ]
-          cd workspace
-          ./gradlew :game:compileJava :game:jar --no-daemon
-          jar tf game/build/libs/*.jar | grep -q "net/minecraft/client/gui/Gui.class"
-          jar tf game/build/libs/*.jar | grep -q "net/flick/bridge/FlickBridge.class"
+          for f in workspace/wasm-toolchain/build-single-html.js "$PATCH_JAR" "$OVERRIDE_JAR"; do
+            [ -f "$f" ] || { echo "[pre-link] FAIL: missing $f" >&2; exit 1; }
+            echo "[pre-link] PASS: $f"
+          done
+          jar tf "$OVERRIDE_JAR" | grep -F -x "org/teavm/classlib/java/nio/charset/TCharset.class" > /dev/null
+          echo "[pre-link] PASS: classlib-override.jar carries the patched classlib classes"
 
       - name: Build the standalone HTML
         working-directory: workspace
@@ -555,6 +432,7 @@ jobs:
           EAGLER_BUILD_CAP_MIB: "13312"
           GRADLE_OPTS: "-Dorg.gradle.daemon=false"
         run: |
+          set -euo pipefail
           mkdir -p ../out
           npm install --no-audit --no-fund
           if [ "$RELEASE" = "true" ]; then FAST=""; else FAST="--fast-package"; fi
@@ -568,11 +446,12 @@ jobs:
           fi
           node wasm-toolchain/build-single-html.js $FAST --output ../out/eaglercraft-26.2-modded.html
           python3 ../loader/inject-addons.py ../addons ../out/eaglercraft-26.2-modded.html
-          [ -s ../out/eaglercraft-26.2-modded.html ] || { echo "ERROR: final HTML missing or empty"; exit 1; }
+          [ -s ../out/eaglercraft-26.2-modded.html ] || { echo "ERROR: out/eaglercraft-26.2-modded.html is missing or empty" >&2; exit 1; }
+          ls -la ../out/
           if [ -f ../eml/disabled-injectors.txt ]; then
             awk '!/^#/' ../eml/disabled-injectors.txt > ../out/turned-off-injectors.txt
           else
-            echo "[injectors] no eml/disabled-injectors.txt (nothing was turned off)"
+            echo "[injectors] eml/disabled-injectors.txt not present; nothing was turned off"
             : > ../out/turned-off-injectors.txt
           fi
 
@@ -583,24 +462,14 @@ jobs:
           if [ -f "$LOG" ]; then
             echo "=== Last 180 lines of $LOG ==="
             tail -n 180 "$LOG"
-            echo "=== Fatal errors / Exceptions / Caused by ==="
             if hits=$(grep -n -C 8 -E "ERROR|Exception|AssertionError|ClassCastException|Caused by:" "$LOG" | tail -n 120); then
               printf '%s\n' "$hits"
             else
-              echo "(no ERROR/Exception lines in the log)"
+              echo "(no ERROR/Exception lines)"
             fi
           else
             echo "Diagnostic log not found at $LOG"
           fi
-
-      - name: Upload client-precise-link.log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: client-precise-link-log
-          path: workspace/wasm-toolchain/generated/client-precise-link.log
-          if-no-files-found: ignore
-          retention-days: 7
 
       - name: Upload build
         uses: actions/upload-artifact@v4
@@ -610,6 +479,7 @@ jobs:
             out/
             eml/weave.log
             eml/gen.log
+          if-no-files-found: error
           retention-days: 14
 
       - name: Publish
@@ -619,6 +489,7 @@ jobs:
           RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.release == true }}
           DIAGNOSTIC: ${{ inputs.diagnostic == true }}
         run: |
+          set -euo pipefail
           if [ "$DIAGNOSTIC" = "true" ]; then
             tag="diag-${GITHUB_RUN_NUMBER}"; title="Diagnostic build ${GITHUB_RUN_NUMBER}"; kind=(--draft)
           elif [ "$RELEASE" = "true" ]; then
@@ -639,11 +510,3 @@ jobs:
             fi
           } > notes.md
           gh release create "$tag" out/*.html --title "$title" --notes-file notes.md "${kind[@]}"
-
-      - name: Upload successful build as GitHub Actions artifact
-        if: ${{ success() && inputs.cache_key != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: flick-${{ inputs.cache_key }}
-          path: workspace/build/**/*.html
-          if-no-files-found: error
